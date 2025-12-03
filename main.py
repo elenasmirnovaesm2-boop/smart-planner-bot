@@ -1,44 +1,46 @@
 import os
-import logging
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
+from flask import Flask, request
+from telegram import Bot, Update
+from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise RuntimeError("Не задан TELEGRAM_BOT_TOKEN")
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+bot = Bot(TOKEN)
+app = Flask(__name__)
 
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Я твой будущий умный планировщик.\nПока я только тестовый бот 🙂"
-    )
+# Диспетчер обрабатывает апдейты
+dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
 
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def start(update, context):
+    update.message.reply_text("Привет! Я тестовый бот на Render с webhook 🧪")
+
+
+def echo(update, context):
     text = update.message.text or ""
-    await update.message.reply_text(f"Я пока учусь. Ты написал(а): {text}")
+    update.message.reply_text(f"Ты написала: {text}")
 
 
-async def main():
-    if not TOKEN:
-        raise RuntimeError("Не задан TELEGRAM_BOT_TOKEN в переменных окружения")
+# Регистрируем хендлеры
+dispatcher.add_handler(CommandHandler("start", start))
+dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
 
-    app = ApplicationBuilder().token(TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+@app.route("/" + TOKEN, methods=["POST"])
+def webhook():
+    """Сюда Telegram будет присылать апдейты."""
+    update = Update.de_json(request.get_json(force=True), bot)
+    dispatcher.process_update(update)
+    return "ok"
 
-    await app.run_polling()
+
+@app.route("/", methods=["GET"])
+def index():
+    return "ok"
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
