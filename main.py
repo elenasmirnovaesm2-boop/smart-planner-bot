@@ -1,7 +1,13 @@
 import os
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters,
+)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -9,7 +15,7 @@ if not TOKEN:
 
 app = Flask(__name__)
 
-# Создаём приложение telegram bot
+# Создаём приложение telegram bot (новый API v20+)
 application = Application.builder().token(TOKEN).build()
 
 
@@ -18,7 +24,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"Ты написала: {update.message.text}")
+    text = update.message.text or ""
+    await update.message.reply_text(f"Ты написала: {text}")
 
 
 # Регистрируем handlers
@@ -33,7 +40,7 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 async def webhook():
-    """Телеграм будет отправлять обновления сюда."""
+    """Сюда Telegram будет присылать обновления."""
     data = request.get_json(force=True)
     update = Update.de_json(data, application.bot)
     await application.process_update(update)
