@@ -1,59 +1,58 @@
 import re
 import storage
 
+# Тексты меню
+MENU_INBOX = "Инбокс"
+MENU_TODAY = "Сегодня"
+MENU_ROUTINES = "Рутины"
+MENU_TEMPLATES = "Шаблоны дня"
+MENU_HABITS = "Привычки"
+MENU_PROJECTS = "Проекты"
+MENU_SOS = "SOS"
+
 
 # ---------- разбиение текста на задачи ----------
 
 def split_into_items(text: str):
     """
     Правило:
-    - если сообщение короткое и без явных признаков списка -> одна задача
+    - если сообщение короткое и без признаков списка -> одна задача
     - если длинное и есть переносы строк или нумерация/буллеты -> несколько задач
     """
     text = (text or "").strip()
     if not text:
         return []
 
-    # "короткое" сообщение (условно)
     is_short = len(text) < 80
 
     has_newlines = "\n" in text
     has_numbering = bool(re.search(r"\d+[.)]\s", text))
     has_bullets = bool(re.search(r"(^|\n)\s*[-•–]\s+\S+", text))
 
-    # Если короткое и без признаков списка → одна задача
     if is_short and not (has_newlines or has_numbering or has_bullets):
         return [text]
 
     items = []
 
-    # 1) если есть переносы строк — режем по строкам
     if has_newlines:
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
-
             low = line.lower()
             if low.startswith("твой инбокс") or low.startswith("inbox"):
                 continue
-
-            # убираем начальные буллеты / номера
             line = re.sub(r"^\s*[-•–]\s*", "", line)
             line = re.sub(r"^\s*\d+[.)]\s*", "", line)
-
             if line:
                 items.append(line)
 
-    # 2) если нет переносов, но есть нумерация в одну строку
     elif has_numbering:
-        # обрезаем всё до первой цифры, если там заголовок
         m = re.search(r"\d+[.)]\s", text)
         if m:
             body = text[m.start():]
         else:
             body = text
-
         parts = re.split(r"(?=\d+[.)]\s)", body)
         for part in parts:
             part = part.strip()
@@ -63,7 +62,6 @@ def split_into_items(text: str):
             if part:
                 items.append(part)
 
-    # 3) если длинное, без нумерации, но с буллетами
     elif has_bullets:
         parts = re.split(r"(?=(^|\n)\s*[-•–]\s+\S+)", text)
         for part in parts:
@@ -74,7 +72,6 @@ def split_into_items(text: str):
             if part:
                 items.append(part)
 
-    # если ничего не распознали как список — возвращаем как одну задачу
     if not items:
         return [text]
 
@@ -86,13 +83,40 @@ def split_into_items(text: str):
 def handle_update(text: str):
     text = (text or "").strip()
 
+    # 1. Проверяем, нет ли "режима" (редактирование и т.п.)
+    pending = storage.get_pending_action()
+    if pending:
+        ptype = pending.get("type")
+        if ptype == "edit_task":
+            task_id = pending.get("task_id")
+            storage.set_pending_action(None)
+            ok, task = storage.update_task_text(task_id, text)
+            if ok:
+                return {"text": f"Обновила задачу #{task['id']}:\n{task['text']}"}
+            else:
+                return {"text": "Не смогла обновить задачу — не нашла её."}
+
+    # 2. Команды
     if text.startswith("/"):
         return handle_command(text)
 
+    # 3. Меню (кнопки)
+    if text in {
+        MENU_INBOX,
+        MENU_TODAY,
+        MENU_ROUTINES,
+        MENU_TEMPLATES,
+        MENU_HABITS,
+        MENU_PROJECTS,
+        MENU_SOS,
+    }:
+        return handle_menu_action(text)
+
+    # 4. Обычный текст → задачи
     return handle_plain_text(text)
 
 
-# ---------- обычный текст → задачи ----------
+# ---------- обработка обычного текста ----------
 
 def handle_plain_text(text: str):
     items = split_into_items(text)
@@ -113,6 +137,59 @@ def handle_plain_text(text: str):
     return {"text": reply_text}
 
 
+# ---------- меню ----------
+
+def handle_menu_action(label: str):
+    if label == MENU_INBOX:
+        return handle_inbox()
+    if label == MENU_TODAY:
+        return handle_today_screen()
+    if label == MENU_ROUTINES:
+        return handle_command("/routines")
+    if label == MENU_TEMPLATES:
+        return handle_command("/templates")
+    if label == MENU_HABITS:
+        return handle_command("/habits")
+    if label == MENU_PROJECTS:
+        return handle_command("/projects")
+    if label == MENU_SOS:
+        return handle_command("/sos_list")
+    return {"text": "Пока не знаю, что делать с этим пунктом меню."}
+
+
+# ---------- экран "Сегодня" ----------
+
+def handle_today_screen():
+    today = storage.list_today()
+    if not today:
+        return {"text": "На сегодня ничего не запланировано.\nВыбери задачи в Инбоксе и добавь в 'Сегодня'."}
+    lines = [f"{t['id']}. {t['text']}" for t in today]
+    return {"text": "Список на сегодня:\n" + "\n".join(lines)}
+
+
+# ---------- inbox ----------
+
+def handle_inbox():
+    tasks = storage.list_active_tasks()
+    if not tasks:
+        return {"text": "В инбоксе пусто ✨"}
+
+    items = []
+    for t in tasks:
+        items.append({
+            "text": f"{t['id']}. {t['text']}",
+            "buttons": [
+                {"text": "✅ Готово", "callback": f"done:{t['id']}"},
+                {"text": "✏ Редактировать", "callback": f"edit:{t['id']}"},
+                {"text": "🗑 Удалить", "callback": f"del:{t['id']}"},
+                {"text": "⭐ Сегодня", "callback": f"today:{t['id']}"},
+                {"text": "➡ В проект", "callback": f"proj:{t['id']}"},
+            ],
+        })
+
+    return {"multiple": True, "items": items}
+
+
 # ---------- команды ----------
 
 def handle_command(text: str):
@@ -125,74 +202,38 @@ def handle_command(text: str):
             "text": (
                 "Привет! Я твой личный планировщик.\n\n"
                 "Короткое сообщение → одна задача.\n"
-                "Длинный список с переносами / 1. 2. 3. → несколько задач.\n\n"
-                "• /inbox — показать задачи\n"
-                "• /routines — рутины\n"
-                "• /templates — шаблоны дня\n"
-                "• /habits — привычки\n"
-                "• /projects — проекты\n"
-                "• /sos_list — аварийные чеклисты"
+                "Длинный список (с переносами, 1. 2. 3., -) → несколько задач.\n\n"
+                "Снизу есть меню:\n"
+                "• Инбокс — входящие задачи\n"
+                "• Сегодня — план на день\n"
+                "• Рутины, Шаблоны дня, Привычки, Проекты, SOS\n\n"
+                "Также доступны команды /help, /inbox и т.п., но можно пользоваться только кнопками."
             )
         }
 
     if cmd == "/help":
         return {
             "text": (
-                "Команды:\n"
+                "Основное управление — через меню (кнопки внизу).\n\n"
+                "Команды (если захочешь):\n"
                 "/inbox — показать невыполненные задачи\n"
-                "/add текст — добавить задачу или список задач\n\n"
-                "/routines — список рутин\n"
-                "/routine_add Название: шаг1; шаг2; шаг3\n"
-                "/routine_show Название_или_ID\n\n"
+                "/add текст — добавить задачу или список задач\n"
+                "/routines — рутины\n"
                 "/templates — шаблоны дня\n"
-                "/template_add Название: блок1; блок2; блок3\n\n"
                 "/habits — привычки\n"
-                "/habit_add Название: расписание\n\n"
                 "/projects — проекты\n"
-                "/project_add Название\n"
-                "/project_step_add ID: шаг\n\n"
-                "/sos_list — аварийные чеклисты\n"
-                "/sos_add Название: шаг1; шаг2; шаг3\n"
-                "/sos Название_или_ID — показать чеклист"
+                "/sos_list — аварийные чеклисты"
             )
         }
 
-    # ----- задачи -----
-
     if cmd == "/inbox":
-        tasks = storage.list_active_tasks()
-        if not tasks:
-            return {"text": "В инбоксе пусто ✨"}
-
-        items = []
-        for t in tasks:
-            items.append({
-                "text": f"{t['id']}. {t['text']}",
-                "buttons": [
-                    {
-                        "text": "✅ Готово",
-                        "callback": f"done:{t['id']}"
-                    }
-                ]
-            })
-        return {"multiple": True, "items": items}
+        return handle_inbox()
 
     if cmd == "/add":
         arg = arg.strip()
         if not arg:
             return {"text": "Напиши так: /add купить молоко\nили список задач."}
-        items = split_into_items(arg)
-        if not items:
-            return {"text": "Не получилось распознать задачи."}
-        if len(items) == 1:
-            task = storage.add_task(items[0])
-            return {"text": f"Добавила задачу #{task['id']}:\n{task['text']}"}
-        created_lines = []
-        for item in items:
-            task = storage.add_task(item)
-            created_lines.append(f"{task['id']}. {task['text']}")
-        reply_text = "Добавила несколько задач:\n" + "\n".join(created_lines)
-        return {"text": reply_text}
+        return handle_plain_text(arg)
 
     # ----- рутины -----
 
@@ -329,16 +370,49 @@ def handle_command(text: str):
         lines = [f"{i+1}. {s}" for i, s in enumerate(sos["steps"])]
         return {"text": f"Чеклист '{sos['name']}':\n" + "\n".join(lines)}
 
-    return {"text": "Не знаю такую команду. Попробуй /help."}
+    return {"text": "Не знаю такую команду. Попробуй /help или используй меню."}
 
 
-# ---------- callback-кнопки (кнопка 'Готово' у задач) ----------
+# ---------- callback-кнопки ----------
 
 def handle_callback(data: str):
+    # done:id, edit:id, del:id, today:id, proj:id
     if data.startswith("done:"):
         task_id = int(data.split(":", 1)[1])
         ok, task = storage.complete_task_by_id(task_id)
         if ok:
             return f"Готово: {task['text']}"
         return "Не нашла задачу"
+
+    if data.startswith("del:"):
+        task_id = int(data.split(":", 1)[1])
+        ok = storage.delete_task_by_id(task_id)
+        if ok:
+            return "Задачу удаляла."
+        return "Не нашла задачу для удаления"
+
+    if data.startswith("edit:"):
+        task_id = int(data.split(":", 1)[1])
+        task = storage.get_task_by_id(task_id)
+        if not task:
+            return "Не нашла задачу для редактирования."
+        storage.set_pending_action({"type": "edit_task", "task_id": task_id})
+        return f"Пришли новый текст для задачи:\n{task['text']}"
+
+    if data.startswith("today:"):
+        task_id = int(data.split(":", 1)[1])
+        item = storage.add_today_from_task(task_id)
+        if item:
+            return f"Добавила в 'Сегодня': {item['text']}"
+        return "Не получилось добавить в 'Сегодня' — не нашла задачу."
+
+    if data.startswith("proj:"):
+        task_id = int(data.split(":", 1)[1])
+        task = storage.get_task_by_id(task_id)
+        if not task:
+            return "Не нашла задачу для перевода в проект."
+        # Простой вариант: создаём отдельный проект с названием задачи
+        p = storage.add_project(task["text"])
+        return f"Создала проект из задачи:\n{p['name']}"
+
     return "Неизвестная кнопка"
