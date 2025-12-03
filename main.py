@@ -10,9 +10,16 @@ if not TOKEN:
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 # ТВОЙ TELEGRAM ID
-ALLOWED_USER = 7604757170 # поставь свой ID
+ALLOWED_USER = 851160223  # замени на свой ID при необходимости
 
 app = Flask(__name__)
+
+MAIN_MENU_KEYBOARD = [
+    ["Инбокс", "Сегодня"],
+    ["Рутины", "Шаблоны дня"],
+    ["Привычки", "Проекты"],
+    ["SOS"],
+]
 
 
 @app.route("/", methods=["GET"])
@@ -55,15 +62,18 @@ def webhook():
 
     reply = logic_tasks.handle_update(text)
 
+    # много сообщений (список задач с кнопками)
     if isinstance(reply, dict) and reply.get("multiple"):
         for item in reply["items"]:
             send_message_with_buttons(chat_id, item["text"], item.get("buttons"))
         return "ok"
 
+    # одиночное сообщение с кнопками
     if isinstance(reply, dict) and reply.get("buttons"):
         send_message_with_buttons(chat_id, reply["text"], reply["buttons"])
         return "ok"
 
+    # обычный текст
     if isinstance(reply, dict):
         text_to_send = reply.get("text", "")
     else:
@@ -78,7 +88,14 @@ def send_message(chat_id, text):
         return
     requests.post(
         API_URL + "sendMessage",
-        json={"chat_id": chat_id, "text": text},
+        json={
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": {
+                "keyboard": [[btn for btn in row] for row in MAIN_MENU_KEYBOARD],
+                "resize_keyboard": True,
+            },
+        },
         timeout=5,
     )
 
@@ -98,9 +115,10 @@ def send_message_with_buttons(chat_id, text, buttons):
     payload = {
         "chat_id": chat_id,
         "text": text,
+        "reply_markup": {
+            "inline_keyboard": inline_keyboard,
+        },
     }
-    if inline_keyboard:
-        payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
 
     requests.post(
         API_URL + "sendMessage",
