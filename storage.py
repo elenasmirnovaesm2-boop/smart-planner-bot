@@ -73,3 +73,12 @@ def complete_task_by_number(number: int):
 
     save_tasks(tasks)
     return True, task
+
+def complete_task_by_id(task_id: int):
+    tasks = load_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            t["done"] = True
+            save_tasks(tasks)
+            return True, t
+    return False, None
