@@ -1,6 +1,7 @@
 import os
 import requests
 from flask import Flask, request
+import logic_tasks  # наша логика задач
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -8,8 +9,8 @@ if not TOKEN:
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
-# ТВОЙ Telegram ID
-ALLOWED_USER = 7604757170  # ← оставь свой ID здесь
+# Твой Telegram ID
+ALLOWED_USER = 7604757176  # ← если нужно, замени на свой
 
 app = Flask(__name__)
 
@@ -27,32 +28,35 @@ def webhook():
     if not message:
         return "ok"
 
-    chat_id = message["chat"]["id"]
-    user_id = message["from"]["id"]   # <-- вот ЭТО ID пользователя
-    text = message.get("text", "")
+    chat = message.get("chat") or {}
+    from_user = message.get("from") or {}
 
-    # 🔐 Проверяем именно user_id
+    chat_id = chat.get("id")
+    user_id = from_user.get("id")
+    text = message.get("text", "") or ""
+
+    # защита по ID
     if user_id != ALLOWED_USER:
-        requests.post(
-            API_URL + "sendMessage",
-            json={"chat_id": chat_id, "text": "У вас нет доступа"},
-            timeout=5,
-        )
+        send_message(chat_id, "У вас нет доступа к этому боту")
         return "ok"
 
-    # Небольшая подсказка в /start
-    if text == "/start":
-        reply = "Привет! Доступ разрешён только тебе 🙂"
-    else:
-        reply = f"Ты написала: {text}"
+    # отдаём текст в логику задач
+    reply = logic_tasks.handle_update(text)
 
-    requests.post(
-        API_URL + "sendMessage",
-        json={"chat_id": chat_id, "text": reply},
-        timeout=5,
-    )
+    # отправляем ответ
+    send_message(chat_id, reply)
 
     return "ok"
+
+
+def send_message(chat_id, text: str):
+    if not chat_id:
+        return
+    requests.post(
+        API_URL + "sendMessage",
+        json={"chat_id": chat_id, "text": text},
+        timeout=5,
+    )
 
 
 if __name__ == "__main__":
