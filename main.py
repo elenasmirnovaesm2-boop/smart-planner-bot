@@ -1,49 +1,46 @@
 import os
+import requests
 from flask import Flask, request
-from telegram import Update
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    ContextTypes,
-    filters,
-)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("Не задан TELEGRAM_BOT_TOKEN")
 
+API_URL = f"https://api.telegram.org/bot{TOKEN}/"
+
 app = Flask(__name__)
-
-# Создаём приложение telegram bot (новый API v20+)
-application = Application.builder().token(TOKEN).build()
-
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я тестовый бот на вебхуке 🧪")
-
-
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text or ""
-    await update.message.reply_text(f"Ты написала: {text}")
-
-
-# Регистрируем handlers
-application.add_handler(CommandHandler("start", start))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
 
 @app.route("/", methods=["GET"])
-def home():
-    return "ok"
+def index():
+    return "Bot is running"
 
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
-    """Сюда Telegram будет присылать обновления."""
+def webhook():
     data = request.get_json(force=True)
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
+
+    # Проверяем, что это обычное сообщение
+    message = data.get("message")
+    if not message:
+        return "ok"
+
+    chat_id = message["chat"]["id"]
+    text = message.get("text", "")
+
+    # Простейшая логика: /start и эхо
+    if text == "/start":
+        reply = "Привет! Я тестовый бот на вебхуке без сложных библиотек 🧪"
+    else:
+        reply = f"Ты написала: {text}"
+
+    # Отправляем ответ через HTTP API Telegram
+    requests.post(
+        API_URL + "sendMessage",
+        json={"chat_id": chat_id, "text": reply},
+        timeout=5,
+    )
+
     return "ok"
 
 
