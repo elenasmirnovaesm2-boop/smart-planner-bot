@@ -10,6 +10,8 @@ TEMPLATES_FILE = os.path.join(BASE_DIR, "templates.json")
 HABITS_FILE = os.path.join(BASE_DIR, "habits.json")
 PROJECTS_FILE = os.path.join(BASE_DIR, "projects.json")
 SOS_FILE = os.path.join(BASE_DIR, "sos.json")
+TODAY_FILE = os.path.join(BASE_DIR, "today.json")
+STATE_FILE = os.path.join(BASE_DIR, "state.json")
 
 # ---------- первоначальные шаблоны ----------
 
@@ -92,7 +94,7 @@ DEFAULT_TEMPLATES = [
         "id": 3,
         "name": "День минимума (когда нет сил)",
         "blocks": [
-            "Утро: только базовая гигиена + вода + что-то одно приятное",
+            "Утро: базовая гигиена + вода + одно маленькое приятное действие",
             "1–2 короткие задачи по 10–15 минут (самое необходимое)",
             "Обязательные вещи: таблетки, документы, письма (по минимуму)",
             "Остальное время — отдых, восстановление, мягкое движение",
@@ -104,9 +106,9 @@ DEFAULT_TEMPLATES = [
         "name": "День фокуса на поиске работы",
         "blocks": [
             "Утро: рутина + короткое упражнение на энергию",
-            "1 блок: обновить резюме / портфолио",
-            "2 блок: поиск вакансий и отклики",
-            "3 блок: подготовка к собеседованию (вопросы, ответы)",
+            "Блок: обновить резюме / портфолио",
+            "Блок: поиск вакансий и отклики",
+            "Блок: подготовка к собеседованию (вопросы, ответы)",
             "Мини-отдых: прогулка / музыка / растяжка",
             "Вечер: подведение итогов дня, план на завтра",
         ],
@@ -132,7 +134,7 @@ DEFAULT_HABITS = [
     {
         "id": 4,
         "name": "Поиск работы",
-        "schedule": "3 раза в неделю уделить 30–60 минут поиску вакансий / заявок",
+        "schedule": "3 раза в неделю 30–60 минут на поиск вакансий / отклики",
     },
     {
         "id": 5,
@@ -163,7 +165,7 @@ DEFAULT_SOS = [
             "Выдели 1–2 самые реальные задачи на ближайший час.",
             "Разбей выбранную задачу на самый маленький первый шаг.",
             "Сделай только первый шаг. Остальное пока не трогаем.",
-            "После шага — короткий перерыв: вода, окно, пару движений.",
+            "После шага — короткий перерыв: вода, окно, пара движений.",
         ],
     },
     {
@@ -172,26 +174,25 @@ DEFAULT_SOS = [
         "steps": [
             "Оцени уровень энергии по шкале от 1 до 10.",
             "Если меньше 4: приоритет — восстановление.",
-            "Сделай что-то базовое: вода, перекус, тёплый душ или плед.",
-            "Выбери одну (!) маленькую задачу на 5–10 минут.",
-            "Пообещай себе остановиться после неё и снова оценить состояние.",
+            "Сделай базовое: вода, перекус, душ или плед.",
+            "Выбери одну маленькую задачу на 5–10 минут.",
+            "После неё снова оцени состояние и реши, что дальше.",
         ],
     },
     {
         "id": 4,
         "name": "Бессонница / не могу заснуть",
         "steps": [
-            "Не лежи в темноте больше 20–30 минут без сна — встань.",
+            "Не лежи в темноте больше 20–30 минут без сна: встань.",
             "Сделай что-то однообразное и спокойное: тёплый чай, тихое чтение.",
             "Убери яркий экран, уменьши свет.",
-            "Лёгкое дыхание: вдох на 4, выдох на 6, 10–15 раз.",
+            "Дыхание: вдох на 4, выдох на 6, 10–15 раз.",
             "Запиши на бумагу мысли, которые крутятся, чтобы выгрузить голову.",
-            "Вернись в кровать только когда появится лёгкая сонливость.",
+            "Вернись в кровать, когда появится лёгкая сонливость.",
         ],
     },
 ]
 
-# проекты по умолчанию — пусто
 DEFAULT_PROJECTS = []
 
 
@@ -250,10 +251,41 @@ def complete_task_by_id(task_id: int):
     return False, None
 
 
+def delete_task_by_id(task_id: int):
+    tasks = load_tasks()
+    new_tasks = [t for t in tasks if t["id"] != task_id]
+    if len(new_tasks) == len(tasks):
+        return False
+    save_tasks(new_tasks)
+    return True
+
+
+def update_task_text(task_id: int, new_text: str):
+    tasks = load_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            t["text"] = new_text
+            save_tasks(tasks)
+            return True, t
+    return False, None
+
+
+def get_task_by_id(task_id: int):
+    tasks = load_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            return t
+    return None
+
+
 # ---------- рутины ----------
 
 def load_routines():
-    return _load_json(ROUTINES_FILE, DEFAULT_ROUTINES)
+    routines = _load_json(ROUTINES_FILE, [])
+    if not routines:
+        routines = DEFAULT_ROUTINES
+        _save_json(ROUTINES_FILE, routines)
+    return routines
 
 
 def save_routines(routines):
@@ -294,7 +326,11 @@ def get_routine_by_name_or_id(key: str):
 # ---------- шаблоны дня ----------
 
 def load_templates():
-    return _load_json(TEMPLATES_FILE, DEFAULT_TEMPLATES)
+    templates = _load_json(TEMPLATES_FILE, [])
+    if not templates:
+        templates = DEFAULT_TEMPLATES
+        _save_json(TEMPLATES_FILE, templates)
+    return templates
 
 
 def save_templates(templates):
@@ -335,7 +371,11 @@ def get_template_by_name_or_id(key: str):
 # ---------- привычки ----------
 
 def load_habits():
-    return _load_json(HABITS_FILE, DEFAULT_HABITS)
+    habits = _load_json(HABITS_FILE, [])
+    if not habits:
+        habits = DEFAULT_HABITS
+        _save_json(HABITS_FILE, habits)
+    return habits
 
 
 def save_habits(habits):
@@ -362,7 +402,10 @@ def list_habits():
 # ---------- проекты ----------
 
 def load_projects():
-    return _load_json(PROJECTS_FILE, DEFAULT_PROJECTS)
+    projects = _load_json(PROJECTS_FILE, [])
+    if projects is None:
+        projects = []
+    return projects
 
 
 def save_projects(projects):
@@ -421,7 +464,11 @@ def get_project_by_name_or_id(key: str):
 # ---------- SOS чеклисты ----------
 
 def load_sos():
-    return _load_json(SOS_FILE, DEFAULT_SOS)
+    sos_list = _load_json(SOS_FILE, [])
+    if not sos_list:
+        sos_list = DEFAULT_SOS
+        _save_json(SOS_FILE, sos_list)
+    return sos_list
 
 
 def save_sos(sos_list):
@@ -457,3 +504,62 @@ def get_sos_by_name_or_id(key: str):
         if s["name"].lower() == low:
             return s
     return None
+
+
+# ---------- "Сегодня" ----------
+
+def load_today():
+    return _load_json(TODAY_FILE, [])
+
+
+def save_today(today_list):
+    _save_json(TODAY_FILE, today_list)
+
+
+def add_today_from_task(task_id: int):
+    task = get_task_by_id(task_id)
+    if not task:
+        return None
+    today = load_today()
+    new_id = max((t.get("id", 0) for t in today), default=0) + 1
+    item = {
+        "id": new_id,
+        "task_id": task_id,
+        "text": task["text"],
+        "added_at": datetime.datetime.utcnow().isoformat(),
+    }
+    today.append(item)
+    save_today(today)
+    return item
+
+
+def list_today():
+    return load_today()
+
+
+def clear_today():
+    save_today([])
+
+
+# ---------- состояние (режимы) ----------
+
+def load_state():
+    return _load_json(STATE_FILE, {})
+
+
+def save_state(state):
+    _save_json(STATE_FILE, state)
+
+
+def set_pending_action(action: dict | None):
+    state = load_state()
+    if action is None:
+        state.pop("pending_action", None)
+    else:
+        state["pending_action"] = action
+    save_state(state)
+
+
+def get_pending_action():
+    state = load_state()
+    return state.get("pending_action")
