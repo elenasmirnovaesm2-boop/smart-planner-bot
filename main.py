@@ -10,7 +10,7 @@ if not TOKEN:
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 # ТВОЙ TELEGRAM ID
-ALLOWED_USER = 7604757170   # ← замени, если нужно
+ALLOWED_USER = 7604757170  # замени, если нужен другой
 
 app = Flask(__name__)
 
@@ -24,7 +24,7 @@ def index():
 def webhook():
     data = request.get_json(force=True)
 
-    # обработка callback кнопок
+    # ---- обработка нажатий кнопок ----
     callback = data.get("callback_query")
     if callback:
         user_id = callback["from"]["id"]
@@ -36,11 +36,11 @@ def webhook():
             send_message(chat_id, "Нет доступа")
             return "ok"
 
-        reply = logic_tasks.handle_callback(data_str)
-        edit_message(chat_id, message_id, reply)
+        reply_text = logic_tasks.handle_callback(data_str)
+        edit_message(chat_id, message_id, reply_text)
         return "ok"
 
-    # обычное сообщение
+    # ---- обычные сообщения ----
     message = data.get("message")
     if not message:
         return "ok"
@@ -50,28 +50,35 @@ def webhook():
     text = message.get("text", "")
 
     if user_id != ALLOWED_USER:
-        send_message(chat_id, "Нет доступа")
+        send_message(chat_id, "Нет доступа к этому боту")
         return "ok"
 
     reply = logic_tasks.handle_update(text)
 
-    # если логика вернула много сообщений
+    # много сообщений (список задач с кнопками)
     if isinstance(reply, dict) and reply.get("multiple"):
         for item in reply["items"]:
-            send_message_with_buttons(chat_id, item["text"], item["buttons"])
+            send_message_with_buttons(chat_id, item["text"], item.get("buttons"))
         return "ok"
 
-    # одно сообщение с кнопками
+    # одиночное сообщение с кнопками
     if isinstance(reply, dict) and reply.get("buttons"):
         send_message_with_buttons(chat_id, reply["text"], reply["buttons"])
         return "ok"
 
     # обычный текст
-    send_message(chat_id, reply.get("text", reply))
+    if isinstance(reply, dict):
+        text_to_send = reply.get("text", "")
+    else:
+        text_to_send = str(reply)
+
+    send_message(chat_id, text_to_send)
     return "ok"
 
 
 def send_message(chat_id, text):
+    if not chat_id or not text:
+        return
     requests.post(
         API_URL + "sendMessage",
         json={"chat_id": chat_id, "text": text},
@@ -80,31 +87,40 @@ def send_message(chat_id, text):
 
 
 def send_message_with_buttons(chat_id, text, buttons):
-    inline_buttons = []
-    for b in buttons:
-        inline_buttons.append([{
-            "text": b["text"],
-            "callback_data": b["callback"]
-        }])
+    if not chat_id or not text:
+        return
+
+    inline_keyboard = []
+    if buttons:
+        for b in buttons:
+            inline_keyboard.append([{
+                "text": b["text"],
+                "callback_data": b["callback"],
+            }])
+
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+    }
+    if inline_keyboard:
+        payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
 
     requests.post(
         API_URL + "sendMessage",
-        json={
-            "chat_id": chat_id,
-            "text": text,
-            "reply_markup": {"inline_keyboard": inline_buttons}
-        },
+        json=payload,
         timeout=5,
     )
 
 
 def edit_message(chat_id, message_id, text):
+    if not chat_id or not message_id or not text:
+        return
     requests.post(
         API_URL + "editMessageText",
         json={
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": text
+            "text": text,
         },
         timeout=5,
     )
