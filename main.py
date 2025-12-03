@@ -10,7 +10,7 @@ if not TOKEN:
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 # ТВОЙ TELEGRAM ID
-ALLOWED_USER = 7604757170  # замени, если нужен другой
+ALLOWED_USER = 851160223  # поставь свой ID
 
 app = Flask(__name__)
 
@@ -55,18 +55,15 @@ def webhook():
 
     reply = logic_tasks.handle_update(text)
 
-    # много сообщений (список задач с кнопками)
     if isinstance(reply, dict) and reply.get("multiple"):
         for item in reply["items"]:
             send_message_with_buttons(chat_id, item["text"], item.get("buttons"))
         return "ok"
 
-    # одиночное сообщение с кнопками
     if isinstance(reply, dict) and reply.get("buttons"):
         send_message_with_buttons(chat_id, reply["text"], reply["buttons"])
         return "ok"
 
-    # обычный текст
     if isinstance(reply, dict):
         text_to_send = reply.get("text", "")
     else:
