@@ -8,6 +8,9 @@ if not TOKEN:
 
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
+# Вставь свой Telegram ID:
+ALLOWED_USER = 851160223  # <--- ЗАМЕНИ НА СВОЙ ID (только число!)
+
 app = Flask(__name__)
 
 
@@ -20,7 +23,7 @@ def index():
 def webhook():
     data = request.get_json(force=True)
 
-    # Проверяем, что это обычное сообщение
+    # Получаем сообщение
     message = data.get("message")
     if not message:
         return "ok"
@@ -28,13 +31,22 @@ def webhook():
     chat_id = message["chat"]["id"]
     text = message.get("text", "")
 
-    # Простейшая логика: /start и эхо
+    # 🔐 Доступ только для твоего ID
+    if chat_id != ALLOWED_USER:
+        requests.post(
+            API_URL + "sendMessage",
+            json={"chat_id": chat_id, "text": "У вас нет доступа"},
+            timeout=5,
+        )
+        return "ok"
+
+    # 👋 Обработка команд
     if text == "/start":
-        reply = "Привет! Я тестовый бот на вебхуке без сложных библиотек 🧪"
+        reply = "Привет! Доступ разрешён только тебе 🙂"
     else:
         reply = f"Ты написала: {text}"
 
-    # Отправляем ответ через HTTP API Telegram
+    # Отправляем ответ
     requests.post(
         API_URL + "sendMessage",
         json={"chat_id": chat_id, "text": reply},
