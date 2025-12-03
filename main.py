@@ -1,43 +1,42 @@
 import os
 from flask import Flask, request
-from telegram import Bot, Update
-from telegram.ext import Dispatcher, CommandHandler, MessageHandler, Filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, ContextTypes, filters
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("Не задан TELEGRAM_BOT_TOKEN")
 
-bot = Bot(TOKEN)
 app = Flask(__name__)
 
-# Диспетчер обрабатывает апдейты
-dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
+# Создаём приложение telegram bot
+application = Application.builder().token(TOKEN).build()
 
 
-def start(update, context):
-    update.message.reply_text("Привет! Я тестовый бот на Render с webhook 🧪")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я тестовый бот на вебхуке 🧪")
 
 
-def echo(update, context):
-    text = update.message.text or ""
-    update.message.reply_text(f"Ты написала: {text}")
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"Ты написала: {update.message.text}")
 
 
-# Регистрируем хендлеры
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
-
-
-@app.route("/" + TOKEN, methods=["POST"])
-def webhook():
-    """Сюда Telegram будет присылать апдейты."""
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return "ok"
+# Регистрируем handlers
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
 
 @app.route("/", methods=["GET"])
-def index():
+def home():
+    return "ok"
+
+
+@app.route("/webhook", methods=["POST"])
+async def webhook():
+    """Телеграм будет отправлять обновления сюда."""
+    data = request.get_json(force=True)
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
     return "ok"
 
 
