@@ -1,6 +1,52 @@
 import json
 import datetime
 import os
+import io
+
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+
+# ---------- Google Drive настройки ----------
+
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+GDRIVE_CREDENTIALS_JSON = os.environ.get("GDRIVE_CREDENTIALS_JSON")
+GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID")
+
+_drive_service = None
+
+
+def get_drive_service():
+    global _drive_service
+    if _drive_service is not None:
+        return _drive_service
+
+    if not GDRIVE_CREDENTIALS_JSON or not GDRIVE_FOLDER_ID:
+        raise RuntimeError("Не заданы GDRIVE_CREDENTIALS_JSON или GDRIVE_FOLDER_ID")
+
+    info = json.loads(GDRIVE_CREDENTIALS_JSON)
+    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    _drive_service = build("drive", "v3", credentials=creds)
+    return _drive_service
+
+
+def _find_file_id(service, filename: str) -> str | None:
+    query = (
+        f"'{GDRIVE_FOLDER_ID}' in parents and "
+        f"name = '{filename}' and "
+        f"trashed = false"
+    )
+    resp = service.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id,name)",
+        pageSize=1
+    ).execute()
+    files = resp.get("files", [])
+    if not files:
+        return None
+    return files[0]["id"]
+
 
 BASE_DIR = os.path.dirname(__file__)
 
@@ -199,16 +245,63 @@ DEFAULT_PROJECTS = []
 # ---------- общие утилиты ----------
 
 def _load_json(path, default):
+    """
+    Читает JSON по имени файла из папки на Google Drive.
+    Если файла нет или ошибка — возвращает default.
+    """
+    filename = os.path.basename(path)
+
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        service = get_drive_service()
+        file_id = _find_file_id(service, filename)
+        if not file_id:
+            return default
+
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+
+        fh.seek(0)
+        raw = fh.read().decode("utf-8")
+        return json.loads(raw)
+    except Exception:
         return default
 
 
 def _save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    """
+    Сохраняет JSON-файл с указанным именем в папку на Google Drive.
+    Если файл уже есть — обновляет, иначе создаёт.
+    """
+    filename = os.path.basename(path)
+    service = get_drive_service()
+
+    content = json.dumps(data, ensure_ascii=False, indent=2)
+    fh = io.BytesIO(content.encode("utf-8"))
+    media = MediaIoBaseUpload(fh, mimetype="application/json", resumable=False)
+
+    file_id = _find_file_id(service, filename)
+
+    file_metadata = {
+        "name": filename,
+        "mimeType": "application/json",
+        "parents": [GDRIVE_FOLDER_ID],
+    }
+
+    if file_id:
+        service.files().update(
+            fileId=file_id,
+            media_body=media,
+        ).execute()
+    else:
+        service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id",
+        ).execute()
 
 
 # ---------- задачи (inbox) ----------
