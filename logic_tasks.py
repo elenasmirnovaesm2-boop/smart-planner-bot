@@ -2,38 +2,59 @@ import re
 import storage
 
 
-# ---------- вспомогательное разбиение текста на задачи ----------
+# ---------- разбиение текста на задачи ----------
 
 def split_into_items(text: str):
     """
-    Пытаемся разнести длинный текст на отдельные задачи.
-    Поддерживаем:
-    - строки через перевод строки
-    - нумерованные списки вида '1. ...2. ...3. ...'
+    Правило:
+    - если сообщение короткое и без явных признаков списка -> одна задача
+    - если длинное и есть переносы строк или нумерация/буллеты -> несколько задач
     """
     text = (text or "").strip()
+    if not text:
+        return []
+
+    # "короткое" сообщение (условно)
+    is_short = len(text) < 80
+
+    has_newlines = "\n" in text
+    has_numbering = bool(re.search(r"\d+[.)]\s", text))
+    has_bullets = bool(re.search(r"(^|\n)\s*[-•–]\s+\S+", text))
+
+    # Если короткое и без признаков списка → одна задача
+    if is_short and not (has_newlines or has_numbering or has_bullets):
+        return [text]
+
     items = []
 
     # 1) если есть переносы строк — режем по строкам
-    if "\n" in text:
+    if has_newlines:
         for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
+
             low = line.lower()
             if low.startswith("твой инбокс") or low.startswith("inbox"):
                 continue
-            items.append(line)
 
-    # 2) если переносов нет, но есть нумерация 1. 2. 3.
-    else:
-        m = re.search(r"\d+[.)]", text)
+            # убираем начальные буллеты / номера
+            line = re.sub(r"^\s*[-•–]\s*", "", line)
+            line = re.sub(r"^\s*\d+[.)]\s*", "", line)
+
+            if line:
+                items.append(line)
+
+    # 2) если нет переносов, но есть нумерация в одну строку
+    elif has_numbering:
+        # обрезаем всё до первой цифры, если там заголовок
+        m = re.search(r"\d+[.)]\s", text)
         if m:
             body = text[m.start():]
         else:
-            return [text]
+            body = text
 
-        parts = re.split(r"(?=\d+[.)])", body)
+        parts = re.split(r"(?=\d+[.)]\s)", body)
         for part in parts:
             part = part.strip()
             if not part:
@@ -42,6 +63,18 @@ def split_into_items(text: str):
             if part:
                 items.append(part)
 
+    # 3) если длинное, без нумерации, но с буллетами
+    elif has_bullets:
+        parts = re.split(r"(?=(^|\n)\s*[-•–]\s+\S+)", text)
+        for part in parts:
+            part = part.strip()
+            if not part:
+                continue
+            part = re.sub(r"^\s*[-•–]\s*", "", part)
+            if part:
+                items.append(part)
+
+    # если ничего не распознали как список — возвращаем как одну задачу
     if not items:
         return [text]
 
@@ -64,11 +97,11 @@ def handle_update(text: str):
 def handle_plain_text(text: str):
     items = split_into_items(text)
 
+    if not items:
+        return {"text": "Пустую задачу не добавляю 🙂"}
+
     if len(items) == 1:
-        item = items[0]
-        if not item:
-            return {"text": "Пустую задачу не добавляю 🙂"}
-        task = storage.add_task(item)
+        task = storage.add_task(items[0])
         return {"text": f"Добавила задачу #{task['id']}:\n{task['text']}"}
 
     created_lines = []
@@ -91,15 +124,14 @@ def handle_command(text: str):
         return {
             "text": (
                 "Привет! Я твой личный планировщик.\n\n"
-                "Базовые возможности:\n"
-                "• Напиши текст или список — добавлю задачи в инбокс.\n"
-                "• /inbox — показать задачи (с кнопками 'Готово').\n\n"
-                "Слои:\n"
-                "1. Рутины: /routines, /routine_add\n"
-                "2. Шаблоны дня: /templates, /template_add\n"
-                "3. Привычки/расписания: /habits, /habit_add\n"
-                "4. Проекты: /projects, /project_add, /project_step_add\n"
-                "5. Аварийные чеклисты: /sos_list, /sos_add"
+                "Короткое сообщение → одна задача.\n"
+                "Длинный список с переносами / 1. 2. 3. → несколько задач.\n\n"
+                "• /inbox — показать задачи\n"
+                "• /routines — рутины\n"
+                "• /templates — шаблоны дня\n"
+                "• /habits — привычки\n"
+                "• /projects — проекты\n"
+                "• /sos_list — аварийные чеклисты"
             )
         }
 
@@ -107,31 +139,25 @@ def handle_command(text: str):
         return {
             "text": (
                 "Команды:\n"
-                "— Задачи —\n"
-                "Просто напиши текст или список — добавлю в инбокс.\n"
-                "/inbox — показать невыполненные задачи.\n\n"
-                "— Рутины —\n"
+                "/inbox — показать невыполненные задачи\n"
+                "/add текст — добавить задачу или список задач\n\n"
                 "/routines — список рутин\n"
                 "/routine_add Название: шаг1; шаг2; шаг3\n"
                 "/routine_show Название_или_ID\n\n"
-                "— Шаблоны дня —\n"
-                "/templates — список\n"
+                "/templates — шаблоны дня\n"
                 "/template_add Название: блок1; блок2; блок3\n\n"
-                "— Привычки/расписания —\n"
-                "/habits — список\n"
+                "/habits — привычки\n"
                 "/habit_add Название: расписание\n\n"
-                "— Проекты —\n"
-                "/projects — список\n"
+                "/projects — проекты\n"
                 "/project_add Название\n"
-                "/project_step_add ID_проекта: шаг\n\n"
-                "— Аварийные чеклисты —\n"
-                "/sos_list — список\n"
+                "/project_step_add ID: шаг\n\n"
+                "/sos_list — аварийные чеклисты\n"
                 "/sos_add Название: шаг1; шаг2; шаг3\n"
                 "/sos Название_или_ID — показать чеклист"
             )
         }
 
-    # ---------- задачи / inbox ----------
+    # ----- задачи -----
 
     if cmd == "/inbox":
         tasks = storage.list_active_tasks()
@@ -149,7 +175,6 @@ def handle_command(text: str):
                     }
                 ]
             })
-
         return {"multiple": True, "items": items}
 
     if cmd == "/add":
@@ -157,6 +182,8 @@ def handle_command(text: str):
         if not arg:
             return {"text": "Напиши так: /add купить молоко\nили список задач."}
         items = split_into_items(arg)
+        if not items:
+            return {"text": "Не получилось распознать задачи."}
         if len(items) == 1:
             task = storage.add_task(items[0])
             return {"text": f"Добавила задачу #{task['id']}:\n{task['text']}"}
@@ -167,24 +194,23 @@ def handle_command(text: str):
         reply_text = "Добавила несколько задач:\n" + "\n".join(created_lines)
         return {"text": reply_text}
 
-    # ---------- рутины ----------
+    # ----- рутины -----
 
     if cmd == "/routines":
         routines = storage.list_routines()
         if not routines:
-            return {"text": "Рутин пока нет. Добавь так:\n/routine_add Утро: вода; умыться; зарядка"}
+            return {"text": "Рутин пока нет."}
         lines = [f"{r['id']}. {r['name']}" for r in routines]
         return {"text": "Рутины:\n" + "\n".join(lines)}
 
     if cmd == "/routine_add":
-        # формат: /routine_add Название: шаг1; шаг2; шаг3
         if ":" not in arg:
             return {"text": "Формат: /routine_add Название: шаг1; шаг2; шаг3"}
         name_part, steps_part = arg.split(":", 1)
         name = name_part.strip()
         steps = [s.strip() for s in steps_part.split(";") if s.strip()]
         if not name or not steps:
-            return {"text": "Нужны и название, и шаги. Пример:\n/routine_add Утро: вода; умыться; зарядка"}
+            return {"text": "Нужны и название, и шаги."}
         routine = storage.add_routine(name, steps)
         return {"text": f"Добавила рутину #{routine['id']}: {routine['name']}"}
 
@@ -198,17 +224,16 @@ def handle_command(text: str):
         lines = [f"{i+1}. {s}" for i, s in enumerate(r["steps"])]
         return {"text": f"Рутина {r['name']}:\n" + "\n".join(lines)}
 
-    # ---------- шаблоны дня ----------
+    # ----- шаблоны дня -----
 
     if cmd == "/templates":
         templates = storage.list_templates()
         if not templates:
-            return {"text": "Шаблонов дня пока нет. Добавь так:\n/template_add Будний: утро; работа; вечер"}
+            return {"text": "Шаблонов дня пока нет."}
         lines = [f"{t['id']}. {t['name']}" for t in templates]
         return {"text": "Шаблоны дня:\n" + "\n".join(lines)}
 
     if cmd == "/template_add":
-        # формат: /template_add Название: блок1; блок2; блок3
         if ":" not in arg:
             return {"text": "Формат: /template_add Название: блок1; блок2; блок3"}
         name_part, blocks_part = arg.split(":", 1)
@@ -219,17 +244,16 @@ def handle_command(text: str):
         template = storage.add_template(name, blocks)
         return {"text": f"Добавила шаблон дня #{template['id']}: {template['name']}"}
 
-    # ---------- привычки / расписания ----------
+    # ----- привычки -----
 
     if cmd == "/habits":
         habits = storage.list_habits()
         if not habits:
-            return {"text": "Привычек/расписаний пока нет. Добавь так:\n/habit_add Таблетки: каждый день в 22:00"}
+            return {"text": "Привычек пока нет."}
         lines = [f"{h['id']}. {h['name']} — {h['schedule']}" for h in habits]
-        return {"text": "Привычки / расписания:\n" + "\n".join(lines)}
+        return {"text": "Привычки:\n" + "\n".join(lines)}
 
     if cmd == "/habit_add":
-        # формат: /habit_add Название: расписание
         if ":" not in arg:
             return {"text": "Формат: /habit_add Название: расписание"}
         name_part, sched_part = arg.split(":", 1)
@@ -240,12 +264,12 @@ def handle_command(text: str):
         habit = storage.add_habit(name, schedule)
         return {"text": f"Добавила привычку #{habit['id']}: {habit['name']} — {habit['schedule']}"}
 
-    # ---------- проекты ----------
+    # ----- проекты -----
 
     if cmd == "/projects":
         projects = storage.list_projects()
         if not projects:
-            return {"text": "Проектов пока нет. Добавь так:\n/project_add Поиск новой работы"}
+            return {"text": "Проектов пока нет."}
         lines = []
         for p in projects:
             steps = p.get("steps", [])
@@ -262,7 +286,6 @@ def handle_command(text: str):
         return {"text": f"Добавила проект #{p['id']}: {p['name']}"}
 
     if cmd == "/project_step_add":
-        # формат: /project_step_add ID: шаг
         if ":" not in arg:
             return {"text": "Формат: /project_step_add ID: текст шага"}
         left, right = arg.split(":", 1)
@@ -276,17 +299,16 @@ def handle_command(text: str):
             return {"text": "Не нашла проект с таким ID."}
         return {"text": f"В проект '{p['name']}' добавлен шаг #{step['id']}:\n{step['text']}"}
 
-    # ---------- аварийные чеклисты (SOS) ----------
+    # ----- SOS -----
 
     if cmd == "/sos_list":
         sos_list = storage.list_sos()
         if not sos_list:
-            return {"text": "Аварийных чеклистов пока нет. Добавь так:\n/sos_add Стресс: шаг1; шаг2; шаг3"}
+            return {"text": "Аварийных чеклистов пока нет."}
         lines = [f"{s['id']}. {s['name']}" for s in sos_list]
         return {"text": "Аварийные чеклисты:\n" + "\n".join(lines)}
 
     if cmd == "/sos_add":
-        # формат: /sos_add Название: шаг1; шаг2; шаг3
         if ":" not in arg:
             return {"text": "Формат: /sos_add Название: шаг1; шаг2; шаг3"}
         name_part, steps_part = arg.split(":", 1)
@@ -307,7 +329,6 @@ def handle_command(text: str):
         lines = [f"{i+1}. {s}" for i, s in enumerate(sos["steps"])]
         return {"text": f"Чеклист '{sos['name']}':\n" + "\n".join(lines)}
 
-    # неизвестная команда
     return {"text": "Не знаю такую команду. Попробуй /help."}
 
 
