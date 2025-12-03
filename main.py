@@ -10,7 +10,7 @@ if not TOKEN:
 API_URL = f"https://api.telegram.org/bot{TOKEN}/"
 
 # ТВОЙ TELEGRAM ID
-ALLOWED_USER = 851160223  # замени на свой ID при необходимости
+ALLOWED_USER = 7604757170  # замени на свой ID при необходимости
 
 app = Flask(__name__)
 
