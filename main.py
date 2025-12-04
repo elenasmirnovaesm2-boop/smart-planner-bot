@@ -11,6 +11,9 @@ from storage import (
     delete_task_by_id,
     update_task_text,
     add_today_from_task,
+    add_tomorrow_from_task,
+    list_today,
+    list_tomorrow,
     set_pending_action,
     get_pending_action,
     get_task_by_id,
@@ -19,6 +22,8 @@ from storage import (
     list_habits,
     list_projects,
     list_sos,
+    add_project,
+    add_project_step,
 )
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -68,22 +73,47 @@ def answer_callback_query(callback_query_id, text=None, show_alert=False):
     tg_request("answerCallbackQuery", payload)
 
 
+# ---------- УТИЛИТЫ ФОРМАТИРОВАНИЯ ----------
+
+def format_datetime_short(value):
+    if not value:
+        return "—"
+    try:
+        dt = datetime.datetime.fromisoformat(value)
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return value
+
+
+def format_importance(value):
+    if not value:
+        return "не классифицировано"
+    v = str(value).lower()
+    mapping = {
+        "срочно и важно": "🔴 Срочно и важно",
+        "срочно, но не важно": "🟠 Срочно, но не важно",
+        "не срочно, но важно": "🔵 Не срочно, но важно",
+        "не срочно и не важно": "🟡 Не срочно и не важно",
+    }
+    return mapping.get(v, value)
+
+
 # ---------- КЛАВИАТУРЫ ----------
 
 def main_keyboard():
     return {
         "keyboard": [
             [{"text": "📥 Инбокс"}, {"text": "📅 Сегодня"}],
-            [{"text": "🔁 Рутины"}, {"text": "📑 Шаблоны дня"}],
-            [{"text": "🌱 Привычки"}, {"text": "📂 Проекты"}],
-            [{"text": "🚨 SOS чеклисты"}, {"text": "⚙️ Меню"}],
+            [{"text": "📆 Завтра"}, {"text": "🔁 Рутины"}],
+            [{"text": "📑 Шаблоны дня"}, {"text": "📂 Проекты"}],
+            [{"text": "🌱 Привычки"}, {"text": "🚨 SOS чеклисты"}],
+            [{"text": "⚙️ Меню"}],
         ],
         "resize_keyboard": True,
     }
 
 
 def inbox_inline_keyboard(tasks):
-    # Только общие кнопки — без отдельных кнопок для каждой задачи и без "В меню"
     return {
         "inline_keyboard": [
             [
@@ -95,7 +125,6 @@ def inbox_inline_keyboard(tasks):
 
 
 def task_inline_keyboard(task_id):
-    # Карточка задачи без "в инбокс", с дедлайном, приоритетом и перемещением
     return {
         "inline_keyboard": [
             [
@@ -104,8 +133,11 @@ def task_inline_keyboard(task_id):
             ],
             [
                 {"text": "➡️ В Сегодня", "callback_data": f"task_today:{task_id}"},
+                {"text": "➡️ На завтра", "callback_data": f"task_tomorrow:{task_id}"},
+            ],
+            [
                 {"text": "⏳ Дедлайн", "callback_data": f"task_deadline:{task_id}"},
-                {"text": "⚡ Важность", "callback_data": f"task_priority:{task_id}"},
+                {"text": "⚡ Приоритет", "callback_data": f"task_priority:{task_id}"},
             ],
             [
                 {"text": "📂 Переместить", "callback_data": f"task_move:{task_id}"},
@@ -131,7 +163,10 @@ def render_inbox_text():
         mark = "☐" if not t.get("done") else "✅"
         lines.append(f"{t['id']}. {mark} {t['text']}")
     lines.append("")
-    lines.append("Выбери задачу: просто напиши её номер (например: 3)")
+    lines.append(
+        "Выбери задачу: просто напиши её номер (например: 3)\n"
+        "Несколько задач: 1 3 5 today / 2,4 done / 1-3 delete."
+    )
     return "\n".join(lines), tasks
 
 
@@ -145,24 +180,24 @@ def render_task_card(task):
     status = "выполнена ✅" if task.get("done") else "не выполнена"
     comment = task.get("done_comment")
     comment_part = f"\nКомментарий: {comment}" if comment else ""
-    created_at = task.get("created_at", "—")
+    created_at = format_datetime_short(task.get("created_at"))
     deadline = task.get("deadline", "не установлен")
-    importance = task.get("importance", "не классифицировано")
+    importance = format_importance(task.get("importance"))
+
     return (
         f"📝 Задача #{task['id']}\n\n"
         f"Текст: {task['text']}\n"
         f"Создано: {created_at}\n"
         f"Статус: {status}\n\n"
-        f"Матрица Эйзенхауэра: {importance}\n"
+        f"Приоритет: {importance}\n"
         f"Дедлайн: {deadline}"
         f"{comment_part}"
     )
 
 
 def handle_add_inbox_text(chat_id, text):
-    # Разбиваем текст на строки, создаём несколько задач, если их несколько
     lines = [line.strip() for line in text.split("\n")]
-    lines = [ln for ln in lines if ln]  # убираем пустые
+    lines = [ln for ln in lines if ln]
 
     if not lines:
         send_message(chat_id, "Не нашла текста для задач. Отправь текст ещё раз.")
@@ -171,7 +206,6 @@ def handle_add_inbox_text(chat_id, text):
     created = []
 
     for ln in lines:
-        # убираем нумерацию вида "1. ", "2) ", "- " в начале
         ln = re.sub(r"^\s*[\-\d]+[\.\)]\s*", "", ln).strip()
         if not ln:
             continue
@@ -179,7 +213,7 @@ def handle_add_inbox_text(chat_id, text):
         created.append(task)
 
     if not created:
-        send_message(chat_id, "Ничего не добавила. Попробуй сформулировать задачи ещё раз.")
+        send_message(chat_id, "Ничего не добавила. Попробуй ещё раз.")
         return
 
     if len(created) == 1:
@@ -187,24 +221,22 @@ def handle_add_inbox_text(chat_id, text):
     else:
         send_message(chat_id, f"Добавила {len(created)} задач в инбокс.")
 
-    # после добавления показываем обновлённый инбокс
     send_inbox(chat_id)
 
 
 def handle_edit_task_text(chat_id, text, task_id):
     ok, task = update_task_text(task_id, text)
     if not ok:
-        send_message(chat_id, "Не нашла эту задачу. Возможно, она уже была удалена.")
+        send_message(chat_id, "Не нашла эту задачу. Возможно, она уже удалена.")
         return
     send_message(chat_id, f"Обновила задачу #{task_id}.")
-    # показываем карточку
     card = render_task_card(task)
     kb = task_inline_keyboard(task_id)
     send_message(chat_id, card, reply_markup=kb)
 
 
 def handle_done_comment(chat_id, text, task_id):
-    from storage import save_tasks, load_tasks  # импорт тут, чтобы не ломать остальной код
+    from storage import save_tasks, load_tasks
 
     tasks = load_tasks()
     for t in tasks:
@@ -218,13 +250,6 @@ def handle_done_comment(chat_id, text, task_id):
 
 
 def handle_set_deadline(chat_id, text, task_id):
-    """
-    Устанавливаем дедлайн задаче.
-    Принимаем:
-      - 'сегодня' / 'today'
-      - 'завтра' / 'tomorrow'
-      - или любую строку как есть
-    """
     from storage import save_tasks, load_tasks
 
     raw = text.strip()
@@ -240,7 +265,6 @@ def handle_set_deadline(chat_id, text, task_id):
     elif lower in ("завтра", "tomorrow"):
         value = (now.date() + datetime.timedelta(days=1)).isoformat()
     else:
-        # оставляем как ввели
         value = raw
 
     tasks = load_tasks()
@@ -254,15 +278,6 @@ def handle_set_deadline(chat_id, text, task_id):
 
 
 def handle_set_priority(chat_id, text, task_id):
-    """
-    Устанавливаем приоритет по матрице Эйзенхауэра.
-    Ожидаем:
-      1 — срочно и важно
-      2 — срочно, но не важно
-      3 — не срочно, но важно
-      4 — не срочно и не важно
-    Можно вводить цифру или текстом.
-    """
     from storage import save_tasks, load_tasks
 
     raw = text.strip().lower()
@@ -276,8 +291,6 @@ def handle_set_priority(chat_id, text, task_id):
         "3": "Не срочно, но важно",
         "4": "Не срочно и не важно",
     }
-
-    # разрешаем вводить текстом
     for key, label in list(mapping.items()):
         mapping[label.lower()] = label
 
@@ -299,12 +312,47 @@ def handle_set_priority(chat_id, text, task_id):
         if t["id"] == task_id:
             t["importance"] = value
             save_tasks(tasks)
-            send_message(chat_id, f"Установила приоритет для задачи #{task_id}: {value}")
+            send_message(chat_id, f"Установила приоритет для задачи #{task_id}: {format_importance(value)}")
             return
-    send_message(chat_id, "Не нашла задачу для установки приоритета.")
+    send_message(chat_id, "Не нашла задачу для приоритета.")
 
 
-# ---------- ЭКРАНЫ: РУТИНЫ / ШАБЛОНЫ / ПРИВЫЧКИ / ПРОЕКТЫ / SOS ----------
+# ---------- TODAY / TOMORROW ----------
+
+def render_scheduled_list(title, items):
+    if not items:
+        return f"{title}\n\nСписок пуст. Добавь задачи из инбокса (например: 3 today)."
+
+    lines = [title, ""]
+    any_task = False
+    for item in items:
+        task = get_task_by_id(item.get("task_id"))
+        if not task:
+            continue
+        any_task = True
+        mark = "☐" if not task.get("done") else "✅"
+        lines.append(f"{task['id']}. {mark} {task['text']}")
+    if not any_task:
+        return f"{title}\n\nСписок пуст (задачи могли быть удалены)."
+
+    lines.append("")
+    lines.append("Выбери задачу: просто напиши её номер, как в инбоксе.")
+    return "\n".join(lines)
+
+
+def send_today_screen(chat_id):
+    items = list_today()
+    text = render_scheduled_list("📅 Сегодня", items)
+    send_message(chat_id, text, reply_markup=main_keyboard())
+
+
+def send_tomorrow_screen(chat_id):
+    items = list_tomorrow()
+    text = render_scheduled_list("📆 Завтра", items)
+    send_message(chat_id, text, reply_markup=main_keyboard())
+
+
+# ---------- РУТИНЫ / ШАБЛОНЫ / ПРИВЫЧКИ / ПРОЕКТЫ / SOS ----------
 
 def render_routines_text():
     routines = list_routines()
@@ -377,16 +425,14 @@ def render_sos_text():
     return "\n".join(lines)
 
 
-# ---------- ОБРАБОТКА MESSAGE ----------
+# ---------- MESSAGE ----------
 
 def handle_text_message(message):
     chat_id = message["chat"]["id"]
     text = (message.get("text") or "").strip()
 
-    # state (ожидаем следующий шаг)
     pending = get_pending_action() or {}
 
-    # 1. специальные режимы (редактирование, добавление и т.п.)
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -397,7 +443,7 @@ def handle_text_message(message):
             task_id = pending.get("task_id")
             set_pending_action(None)
             if task_id is None:
-                send_message(chat_id, "Что-то пошло не так: не знаю, какую задачу редактировать.")
+                send_message(chat_id, "Не знаю, какую задачу редактировать.")
                 return
             handle_edit_task_text(chat_id, text, int(task_id))
             return
@@ -405,7 +451,7 @@ def handle_text_message(message):
             task_id = pending.get("task_id")
             set_pending_action(None)
             if task_id is None:
-                send_message(chat_id, "Что-то пошло не так: не знаю, к какой задаче добавить комментарий.")
+                send_message(chat_id, "Не знаю, к какой задаче комментарий.")
                 return
             handle_done_comment(chat_id, text, int(task_id))
             return
@@ -413,7 +459,7 @@ def handle_text_message(message):
             task_id = pending.get("task_id")
             set_pending_action(None)
             if task_id is None:
-                send_message(chat_id, "Не знаю, для какой задачи установить дедлайн.")
+                send_message(chat_id, "Не знаю, для какой задачи дедлайн.")
                 return
             handle_set_deadline(chat_id, text, int(task_id))
             return
@@ -421,17 +467,52 @@ def handle_text_message(message):
             task_id = pending.get("task_id")
             set_pending_action(None)
             if task_id is None:
-                send_message(chat_id, "Не знаю, для какой задачи установить приоритет.")
+                send_message(chat_id, "Не знаю, для какой задачи приоритет.")
                 return
             handle_set_priority(chat_id, text, int(task_id))
             return
+        if ptype == "move_task_to_project":
+            task_id = pending.get("task_id")
+            set_pending_action(None)
+            if task_id is None:
+                send_message(chat_id, "Не знаю, какую задачу переносить.")
+                return
 
-    # 2. обычные команды и кнопки
+            projects = list_projects()
+            raw = text.strip()
+            target_project = None
+
+            if raw.isdigit():
+                pid = int(raw)
+                for p in projects:
+                    if p["id"] == pid:
+                        target_project = p
+                        break
+                if not target_project:
+                    send_message(chat_id, f"Проект с номером {pid} не найден.")
+                    return
+            else:
+                target_project = add_project(raw)
+                send_message(chat_id, f"Создала новый проект: {target_project['name']}.")
+
+            task = get_task_by_id(int(task_id))
+            if not task:
+                send_message(chat_id, "Не нашла задачу для перемещения.")
+                return
+            proj, step = add_project_step(target_project["id"], task["text"])
+            delete_task_by_id(int(task_id))
+            send_message(
+                chat_id,
+                f"Перенесла задачу в проект «{target_project['name']}» как шаг: {step['text']}",
+            )
+            return
+
+    # команды и кнопки
     if text == "/start":
         send_message(
             chat_id,
             "Привет! Это твой планировщик.\n\n"
-            "Используй кнопки ниже, чтобы работать с задачами, рутинами и шаблонами.",
+            "Кнопки внизу: инбокс, сегодня, завтра, рутины, проекты и т.п.",
             reply_markup=main_keyboard(),
         )
         return
@@ -441,12 +522,12 @@ def handle_text_message(message):
             chat_id,
             "Главное меню.\n\n"
             "📥 Инбокс — собрать и разобрать задачи\n"
-            "📅 Сегодня — задачи на сегодня (позже)\n"
-            "🔁 Рутины — утро/вечер/уборка и т.п.\n"
+            "📅 Сегодня / 📆 Завтра — задачи на эти дни\n"
+            "🔁 Рутины — утро/вечер/уборка\n"
             "📑 Шаблоны дня — будни, выходные, день минимума\n"
             "🌱 Привычки — вода, зарядка, английский\n"
             "📂 Проекты — большие цели\n"
-            "🚨 SOS — действия при стрессе, бессоннице и т.п.\n",
+            "🚨 SOS — действия при стрессе, бессоннице и т.п.",
             reply_markup=main_keyboard(),
         )
         return
@@ -456,15 +537,11 @@ def handle_text_message(message):
         return
 
     if text in ("/today", "📅 Сегодня"):
-        send_message(
-            chat_id,
-            "Экран «Сегодня» мы ещё доделаем.\n"
-            "Сейчас можно добавлять задачи в «Сегодня» так:\n"
-            "— открыть инбокс\n"
-            "— посмотреть номер задачи\n"
-            "— написать: 3 today",
-            reply_markup=main_keyboard(),
-        )
+        send_today_screen(chat_id)
+        return
+
+    if text in ("/tomorrow", "📆 Завтра"):
+        send_tomorrow_screen(chat_id)
         return
 
     if text in ("/routines", "🔁 Рутины"):
@@ -487,54 +564,91 @@ def handle_text_message(message):
         send_message(chat_id, render_sos_text(), reply_markup=main_keyboard())
         return
 
-    # 3. короткие команды вида "N ..." (работа с задачами по номеру)
-    m = re.match(r"^(\d+)(?:\s+(.+))?$", text)
+    # мультивыбор: "1 3 5 today"
+    multi_match = re.match(r"^([\d,\s\-]+)\s+(\S+)$", text.strip())
+    if multi_match:
+        ids_part, cmd = multi_match.groups()
+        cmd = cmd.lower()
+
+        raw_tokens = re.split(r"[,\s]+", ids_part)
+        task_ids = []
+        for tok in raw_tokens:
+            if "-" in tok:
+                try:
+                    start, end = tok.split("-", 1)
+                    start_i = int(start)
+                    end_i = int(end)
+                    if start_i <= end_i:
+                        task_ids.extend(range(start_i, end_i + 1))
+                except ValueError:
+                    continue
+            elif tok.isdigit():
+                task_ids.append(int(tok))
+
+        task_ids = sorted(set(task_ids))
+
+        if task_ids and cmd in (
+            "today",
+            "сегодня",
+            "tomorrow",
+            "завтра",
+            "done",
+            "готово",
+            "delete",
+            "удалить",
+        ):
+            ok_ids = []
+            fail_ids = []
+
+            for tid in task_ids:
+                success = False
+                if cmd in ("today", "сегодня"):
+                    success = add_today_from_task(tid) is not None
+                elif cmd in ("tomorrow", "завтра"):
+                    success = add_tomorrow_from_task(tid) is not None
+                elif cmd in ("done", "готово"):
+                    success, _ = complete_task_by_id(tid)
+                elif cmd in ("delete", "удалить"):
+                    success = delete_task_by_id(tid)
+                if success:
+                    ok_ids.append(tid)
+                else:
+                    fail_ids.append(tid)
+
+            if ok_ids:
+                action_name = {
+                    "today": "в «Сегодня»",
+                    "сегодня": "в «Сегодня»",
+                    "tomorrow": "на «Завтра»",
+                    "завтра": "на «Завтра»",
+                    "done": "как выполненные",
+                    "готово": "как выполненные",
+                    "delete": "как удалённые",
+                    "удалить": "как удалённые",
+                }[cmd]
+                send_message(chat_id, f"Обработала задачи {ok_ids} {action_name}.")
+            if fail_ids:
+                send_message(chat_id, f"Не нашла задачи: {fail_ids}.")
+            return
+
+    # одиночный номер: "3"
+    m = re.match(r"^(\d+)$", text)
     if m:
         task_id = int(m.group(1))
-        cmd = (m.group(2) or "").strip().lower()
-
-        # если есть доп.команда после номера
-        if cmd:
-            if cmd in ("today", "сегодня"):
-                item = add_today_from_task(task_id)
-                if item:
-                    send_message(chat_id, f"Добавила задачу #{task_id} в «Сегодня».")
-                else:
-                    send_message(chat_id, f"Не нашла задачу #{task_id}.")
-                return
-
-            if cmd in ("done", "готово"):
-                ok, _ = complete_task_by_id(task_id)
-                if ok:
-                    send_message(chat_id, f"Задача #{task_id} отмечена как выполненная.")
-                else:
-                    send_message(chat_id, f"Не нашла задачу #{task_id}.")
-                return
-
-            if cmd in ("delete", "удалить"):
-                ok = delete_task_by_id(task_id)
-                if ok:
-                    send_message(chat_id, f"Удалена задача #{task_id}.")
-                else:
-                    send_message(chat_id, f"Не нашла задачу #{task_id}.")
-                return
-
-        # если доп.команды нет — просто открываем карточку задачи
         task = get_task_by_id(task_id)
         if not task:
             send_message(chat_id, f"Не нашла задачу #{task_id}.")
             return
-
         card = render_task_card(task)
         kb = task_inline_keyboard(task_id)
         send_message(chat_id, card, reply_markup=kb)
         return
 
-    # 4. всё остальное считаем новыми задачами в инбоксе
+    # всё остальное — добавляем в инбокс
     handle_add_inbox_text(chat_id, text)
 
 
-# ---------- ОБРАБОТКА CALLBACK_QUERY ----------
+# ---------- CALLBACK_QUERY ----------
 
 def handle_callback(callback_query):
     cq_id = callback_query["id"]
@@ -558,7 +672,7 @@ def handle_callback(callback_query):
         )
         return
 
-    if data == "inbox_refresh" or data == "back_inbox":
+    if data == "inbox_refresh":
         answer_callback_query(cq_id)
         text, tasks = render_inbox_text()
         kb = inbox_inline_keyboard(tasks)
@@ -569,26 +683,6 @@ def handle_callback(callback_query):
                 send_inbox(chat_id)
         else:
             send_inbox(chat_id)
-        return
-
-    # действия с конкретными задачами
-    if data.startswith("task_open:"):
-        _, sid = data.split(":", 1)
-        tid = int(sid)
-        task = get_task_by_id(tid)
-        if not task:
-            answer_callback_query(cq_id, "Задача не найдена")
-            return
-        answer_callback_query(cq_id)
-        card = render_task_card(task)
-        kb = task_inline_keyboard(tid)
-        if message_id:
-            try:
-                edit_message(chat_id, message_id, card, reply_markup=kb)
-            except Exception:
-                send_message(chat_id, card, reply_markup=kb)
-        else:
-            send_message(chat_id, card, reply_markup=kb)
         return
 
     if data.startswith("task_delete:"):
@@ -619,8 +713,7 @@ def handle_callback(callback_query):
         send_message(
             chat_id,
             f"Задача #{tid} отмечена как выполненная.\n"
-            "Хочешь добавить короткий комментарий (сложности, как прошло)?\n"
-            "Если нет — напиши «-».",
+            "Хочешь добавить короткий комментарий? Если нет — напиши «-».",
         )
         return
 
@@ -634,6 +727,16 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id, "Добавила в «Сегодня»")
         return
 
+    if data.startswith("task_tomorrow:"):
+        _, sid = data.split(":", 1)
+        tid = int(sid)
+        item = add_tomorrow_from_task(tid)
+        if not item:
+            answer_callback_query(cq_id, "Не нашла задачу")
+            return
+        answer_callback_query(cq_id, "Добавила на «Завтра»")
+        return
+
     if data.startswith("task_deadline:"):
         _, sid = data.split(":", 1)
         tid = int(sid)
@@ -641,8 +744,8 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id)
         send_message(
             chat_id,
-            "Напиши дедлайн для задачи в удобном виде.\n"
-            "Например: «сегодня», «завтра» или дату в формате ГГГГ-ММ-ДД.",
+            "Напиши дедлайн для задачи.\n"
+            "Например: «сегодня», «завтра» или дату ГГГГ-ММ-ДД.",
         )
         return
 
@@ -653,7 +756,7 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id)
         send_message(
             chat_id,
-            "Укажи приоритет (матрица Эйзенхауэра).\n"
+            "Матрица Эйзенхауэра.\n"
             "Напиши число 1–4:\n"
             "1 — Срочно и важно\n"
             "2 — Срочно, но не важно\n"
@@ -663,11 +766,29 @@ def handle_callback(callback_query):
         return
 
     if data.startswith("task_move:"):
-        # пока только заглушка, чтобы кнопка не ломала ничего
-        answer_callback_query(cq_id, "Перемещение в другие сущности пока не реализовано.")
+        _, sid = data.split(":", 1)
+        tid = int(sid)
+        set_pending_action({"type": "move_task_to_project", "task_id": tid})
+        answer_callback_query(cq_id)
+        projects = list_projects()
+        if projects:
+            lines = ["Куда перенести задачу?\n", "Существующие проекты:"]
+            for p in projects:
+                lines.append(f"{p['id']}. {p['name']}")
+            lines.append("")
+            lines.append(
+                "Напиши номер проекта или новое название проекта,\n"
+                "и я создам его и перенесу туда задачу."
+            )
+            send_message(chat_id, "\n".join(lines))
+        else:
+            send_message(
+                chat_id,
+                "У тебя пока нет проектов.\n"
+                "Напиши название нового проекта, и я создам его и перенесу туда задачу.",
+            )
         return
 
-    # если что-то неизвестное
     answer_callback_query(cq_id)
 
 
@@ -687,9 +808,8 @@ def webhook():
         return "ok"
 
     message = data.get("message")
-    if message:
-        if "text" in message:
-            handle_text_message(message)
+    if message and "text" in message:
+        handle_text_message(message)
     return "ok"
 
 
