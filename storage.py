@@ -1,51 +1,36 @@
 import json
 import datetime
 import os
-import io
 
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+import dropbox
+from dropbox.exceptions import ApiError
+from dropbox.files import WriteMode
 
-# ---------- Google Drive настройки ----------
+# ---------- Dropbox настройки ----------
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-GDRIVE_CREDENTIALS_JSON = os.environ.get("GDRIVE_CREDENTIALS_JSON")
-GDRIVE_FOLDER_ID = os.environ.get("GDRIVE_FOLDER_ID")
+DROPBOX_TOKEN = os.environ.get("DROPBOX_TOKEN")
+DROPBOX_ROOT_PATH = os.environ.get("DROPBOX_ROOT_PATH", "/smart-planner")
 
-_drive_service = None
+_dbx = None
 
 
-def get_drive_service():
-    global _drive_service
-    if _drive_service is not None:
-        return _drive_service
-
-    if not GDRIVE_CREDENTIALS_JSON or not GDRIVE_FOLDER_ID:
-        raise RuntimeError("Не заданы GDRIVE_CREDENTIALS_JSON или GDRIVE_FOLDER_ID")
-
-    info = json.loads(GDRIVE_CREDENTIALS_JSON)
-    creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-    _drive_service = build("drive", "v3", credentials=creds)
-    return _drive_service
+def get_dropbox_client():
+    global _dbx
+    if _dbx is not None:
+        return _dbx
+    if not DROPBOX_TOKEN:
+        raise RuntimeError("Не задан DROPBOX_TOKEN")
+    _dbx = dropbox.Dropbox(DROPBOX_TOKEN)
+    return _dbx
 
 
-def _find_file_id(service, filename: str) -> str | None:
-    query = (
-        f"'{GDRIVE_FOLDER_ID}' in parents and "
-        f"name = '{filename}' and "
-        f"trashed = false"
-    )
-    resp = service.files().list(
-        q=query,
-        spaces="drive",
-        fields="files(id,name)",
-        pageSize=1
-    ).execute()
-    files = resp.get("files", [])
-    if not files:
-        return None
-    return files[0]["id"]
+def _dropbox_path(filename: str) -> str:
+    """
+    Преобразуем имя файла в путь в Dropbox внутри корневой папки.
+    Например: tasks.json -> /smart-planner/tasks.json
+    """
+    root = DROPBOX_ROOT_PATH.rstrip("/")
+    return f"{root}/{filename}"
 
 
 BASE_DIR = os.path.dirname(__file__)
@@ -242,66 +227,48 @@ DEFAULT_SOS = [
 DEFAULT_PROJECTS = []
 
 
-# ---------- общие утилиты ----------
+# ---------- общие утилиты (Dropbox JSON) ----------
 
 def _load_json(path, default):
     """
-    Читает JSON по имени файла из папки на Google Drive.
+    Читает JSON по имени файла из Dropbox (папка DROPBOX_ROOT_PATH).
     Если файла нет или ошибка — возвращает default.
     """
     filename = os.path.basename(path)
+    dbx_path = _dropbox_path(filename)
 
     try:
-        service = get_drive_service()
-        file_id = _find_file_id(service, filename)
-        if not file_id:
-            return default
-
-        request = service.files().get_media(fileId=file_id)
-        fh = io.BytesIO()
-        downloader = MediaIoBaseDownload(fh, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
-        fh.seek(0)
-        raw = fh.read().decode("utf-8")
+        client = get_dropbox_client()
+        _, res = client.files_download(dbx_path)
+        raw = res.content.decode("utf-8")
         return json.loads(raw)
-    except Exception:
+    except ApiError as e:
+        # файл ещё не существует
+        print(f"Dropbox: файл {dbx_path} не найден или ошибка API: {e}")
+        return default
+    except Exception as e:
+        print(f"Dropbox: ошибка чтения {dbx_path}: {e}")
         return default
 
 
 def _save_json(path, data):
     """
-    Сохраняет JSON-файл с указанным именем в папку на Google Drive.
-    Если файл уже есть — обновляет, иначе создаёт.
+    Сохраняет JSON-файл с указанным именем в Dropbox.
+    Если файл уже есть — перезаписывает.
     """
     filename = os.path.basename(path)
-    service = get_drive_service()
+    dbx_path = _dropbox_path(filename)
+    client = get_dropbox_client()
 
-    content = json.dumps(data, ensure_ascii=False, indent=2)
-    fh = io.BytesIO(content.encode("utf-8"))
-    media = MediaIoBaseUpload(fh, mimetype="application/json", resumable=False)
-
-    file_id = _find_file_id(service, filename)
-
-    file_metadata = {
-        "name": filename,
-        "mimeType": "application/json",
-        "parents": [GDRIVE_FOLDER_ID],
-    }
-
-    if file_id:
-        service.files().update(
-            fileId=file_id,
-            media_body=media,
-        ).execute()
-    else:
-        service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id",
-        ).execute()
+    content = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    try:
+        client.files_upload(
+            content,
+            dbx_path,
+            mode=WriteMode.overwrite,
+        )
+    except Exception as e:
+        print(f"Dropbox: ошибка записи {dbx_path}: {e}")
 
 
 # ---------- задачи (inbox) ----------
