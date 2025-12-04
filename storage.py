@@ -42,6 +42,7 @@ HABITS_FILE = os.path.join(BASE_DIR, "habits.json")
 PROJECTS_FILE = os.path.join(BASE_DIR, "projects.json")
 SOS_FILE = os.path.join(BASE_DIR, "sos.json")
 TODAY_FILE = os.path.join(BASE_DIR, "today.json")
+TOMORROW_FILE = os.path.join(BASE_DIR, "tomorrow.json")  # ← добавили файл для «Завтра»
 STATE_FILE = os.path.join(BASE_DIR, "state.json")
 
 # ---------- первоначальные шаблоны ----------
@@ -549,6 +550,10 @@ def add_sos(name: str, steps):
 
 
 def list_sos():
+    return sos_list
+
+
+def list_sos():
     return load_sos()
 
 
@@ -599,6 +604,41 @@ def list_today():
 
 def clear_today():
     save_today([])
+
+
+# ---------- "Завтра" ----------
+
+def load_tomorrow():
+    return _load_json(TOMORROW_FILE, [])
+
+
+def save_tomorrow(tomorrow_list):
+    _save_json(TOMORROW_FILE, tomorrow_list)
+
+
+def add_tomorrow_from_task(task_id: int):
+    task = get_task_by_id(task_id)
+    if not task:
+        return None
+    tomorrow = load_tomorrow()
+    new_id = max((t.get("id", 0) for t in tomorrow), default=0) + 1
+    item = {
+        "id": new_id,
+        "task_id": task_id,
+        "text": task["text"],
+        "added_at": datetime.datetime.utcnow().isoformat(),
+    }
+    tomorrow.append(item)
+    save_tomorrow(tomorrow)
+    return item
+
+
+def list_tomorrow():
+    return load_tomorrow()
+
+
+def clear_tomorrow():
+    save_tomorrow([])
 
 
 # ---------- состояние (режимы) ----------
