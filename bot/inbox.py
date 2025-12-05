@@ -74,6 +74,20 @@ def handle_add_inbox_text(chat_id, text):
 
     send_inbox(chat_id)
 
+def handle_done_comment(chat_id, text, task_id):
+    from storage import save_tasks, load_tasks
+    from bot.telegram_api import send_message
+
+    tasks = load_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            if text.strip() != "-":
+                t["done_comment"] = text.strip()
+            save_tasks(tasks)
+            send_message(chat_id, "Сохранила комментарий.")
+            return
+    send_message(chat_id, "Не нашла задачу.")
+
 
 def handle_edit_task_text(chat_id, text, task_id):
     from bot.telegram_api import send_message
