@@ -26,6 +26,7 @@ from storage import (
 
 from bot.inbox import (
     send_inbox,
+    render_inbox_text,      # ← ДОБАВИТЬ
     render_task_card,
     handle_add_inbox_text,
     handle_edit_task_text,
