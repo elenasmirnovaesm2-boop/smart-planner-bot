@@ -74,6 +74,19 @@ def handle_add_inbox_text(chat_id, text):
 
     send_inbox(chat_id)
 
+def handle_edit_task_text(chat_id, text, task_id):
+    from bot.telegram_api import send_message
+
+    ok, task = update_task_text(task_id, text)
+    if not ok:
+        send_message(chat_id, "Не нашла эту задачу.")
+        return
+    send_message(chat_id, "Обновила.")
+    card = render_task_card(task)
+    kb = task_inline_keyboard(task_id)
+    send_message(chat_id, card, reply_markup=kb)
+
+
 def handle_done_comment(chat_id, text, task_id):
     from storage import save_tasks, load_tasks
     from bot.telegram_api import send_message
@@ -87,16 +100,3 @@ def handle_done_comment(chat_id, text, task_id):
             send_message(chat_id, "Сохранила комментарий.")
             return
     send_message(chat_id, "Не нашла задачу.")
-
-
-def handle_edit_task_text(chat_id, text, task_id):
-    from bot.telegram_api import send_message
-
-    ok, task = update_task_text(task_id, text)
-    if not ok:
-        send_message(chat_id, "Не нашла эту задачу.")
-        return
-    send_message(chat_id, "Обновила.")
-    card = render_task_card(task)
-    kb = task_inline_keyboard(task_id)
-    send_message(chat_id, card, reply_markup=kb)
