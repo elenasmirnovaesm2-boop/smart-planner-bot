@@ -222,7 +222,7 @@ def handle_callback(callback_query):
             send_inbox(chat_id)
         return
 
-   if data == "today_refresh":
+    if data == "today_refresh":
         answer_callback_query(cq_id)
         if message_id:
             refresh_today(chat_id, message_id)
