@@ -10,8 +10,6 @@ from storage import (
     delete_task_by_id,
     update_task_text,
     add_today_from_task,
-    list_today,
-    clear_today,
     set_pending_action,
     get_pending_action,
 )
@@ -76,7 +74,6 @@ def main_keyboard():
 
 
 def inbox_inline_keyboard(tasks):
-    # Кнопки для задач (#1, #2, ...)
     task_buttons = []
     for t in tasks:
         btn = {
@@ -85,7 +82,6 @@ def inbox_inline_keyboard(tasks):
         }
         task_buttons.append([btn])
 
-    # Общие кнопки
     common = [
         [
             {"text": "➕ Добавить", "callback_data": "inbox_add"},
@@ -114,21 +110,7 @@ def task_inline_keyboard(task_id):
     }
 
 
-def today_inline_keyboard():
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "➕ Добавить", "callback_data": "today_add"},
-                {"text": "🗑 Очистить", "callback_data": "today_clear"},
-            ],
-            [
-                {"text": "⬅️ В меню", "callback_data": "back_menu"},
-            ],
-        ]
-    }
-
-
-# ---------- ЛОГИКА: ИНБОКС ----------
+# ---------- ИНБОКС ----------
 
 def render_inbox_text():
     tasks = list_active_tasks()
@@ -151,113 +133,14 @@ def render_task_card(task):
     status = "выполнена ✅" if task.get("done") else "не выполнена"
     comment = task.get("done_comment")
     comment_part = f"\nКомментарий: {comment}" if comment else ""
-    created = task.get("created_at")
-    created_part = ""
-    if created:
-        # упрощённый вид даты: только дата и время без миллисекунд
-        try:
-            dt = datetime.datetime.fromisoformat(created.replace("Z", ""))
-            created_part = "\nСоздана: " + dt.strftime("%d.%m %H:%M")
-        except Exception:
-            created_part = f"\nСоздана: {created}"
-
     return (
         f"Задача #{task['id']}\n\n"
         f"Текст: {task['text']}\n"
-        f"Статус: {status}{comment_part}{created_part}"
+        f"Статус: {status}{comment_part}"
     )
 
 
 def handle_add_inbox_text(chat_id, text):
-    # Разбиваем текст на строки, создаём несколько задач, если их несколько
-    lines = [line.strip() for line in text.split("\n")]
-    lines = [ln for ln in lines if ln]  # убираем пустые
-
-    if not lines:
-        send_message(chat_id, "Не нашла текста для задач. Отправь текст ещё раз.")
-        return
-
-    created = []
-
-    for ln in lines:
-        # убираем нумерацию вида "1. ", "2) ", "- " в начале
-        ln = re.sub(r"^\s*[\-\d]+[\.\)]\s*", "", ln).strip()
-        if not ln:
-            continue
-        task = add_task(ln)
-        created.append(task)
-
-    if not created:
-        send_message(chat_id, "Ничего не добавила. Попробуй сформулировать задачи ещё раз.")
-        return
-
-    if len(created) == 1:
-        send_message(chat_id, f"Добавила задачу #{created[0]['id']}: {created[0]['text']}")
-    else:
-        send_message(chat_id, f"Добавила {len(created)} задач в инбокс.")
-
-    # после добавления показываем обновлённый инбокс
-    send_inbox(chat_id)
-
-
-def handle_edit_task_text(chat_id, text, task_id):
-    ok, task = update_task_text(task_id, text)
-    if not ok:
-        send_message(chat_id, "Не нашла эту задачу. Возможно, она уже была удалена.")
-        return
-    send_message(chat_id, f"Обновила задачу #{task_id}.")
-    # показываем карточку
-    card = render_task_card(task)
-    kb = task_inline_keyboard(task_id)
-    send_message(chat_id, card, reply_markup=kb)
-
-
-def handle_done_comment(chat_id, text, task_id):
-    from storage import save_tasks, load_tasks  # импорт тут, чтобы не ломать остальной код
-
-    tasks = load_tasks()
-    for t in tasks:
-        if t["id"] == task_id:
-            if text.strip() != "-":
-                t["done_comment"] = text.strip()
-            save_tasks(tasks)
-            send_message(chat_id, f"Записала комментарий к задаче #{task_id}.")
-            return
-    send_message(chat_id, "Не нашла задачу для комментария.")
-
-
-# ---------- ЛОГИКА: СЕГОДНЯ ----------
-
-import datetime  # нужно для форматирования даты в карточке
-
-
-def render_today_text():
-    items = list_today()
-    if not items:
-        return (
-            "Сегодня пока пусто.\n\n"
-            "Добавь задачи из инбокса (кнопка «➡️ В Сегодня» в карточке задачи)\n"
-            "или нажми «➕ Добавить», чтобы записать что-то прямо в список «Сегодня».",
-            items,
-        )
-
-    lines = ["Задачи на сегодня:"]
-    for idx, item in enumerate(items, start=1):
-        lines.append(f"{idx}. {item['text']}")
-    return "\n".join(lines), items
-
-
-def send_today(chat_id):
-    text, items = render_today_text()
-    kb = today_inline_keyboard()
-    send_message(chat_id, text, reply_markup=kb)
-
-
-def handle_add_today_text(chat_id, text):
-    """
-    Добавляет одну или несколько задач сразу в список «Сегодня».
-    Логика: создаём обычные задачи в инбоксе и тут же добавляем их в today.
-    """
     lines = [line.strip() for line in text.split("\n")]
     lines = [ln for ln in lines if ln]
 
@@ -266,37 +149,53 @@ def handle_add_today_text(chat_id, text):
         return
 
     created = []
+
     for ln in lines:
         ln = re.sub(r"^\s*[\-\d]+[\.\)]\s*", "", ln).strip()
         if not ln:
             continue
         task = add_task(ln)
-        item = add_today_from_task(task["id"])
-        if item:
-            created.append(item)
-
-    if not created:
-        send_message(chat_id, "Ничего не добавила в «Сегодня». Попробуй ещё раз.")
-        return
+        created.append(task)
 
     if len(created) == 1:
-        send_message(chat_id, f"Добавила в «Сегодня»: {created[0]['text']}")
+        send_message(chat_id, f"Добавила задачу #{created[0]['id']}: {created[0]['text']}")
     else:
-        send_message(chat_id, f"Добавила {len(created)} задач в «Сегодня».")
+        send_message(chat_id, f"Добавила {len(created)} задач в инбокс.")
 
-    send_today(chat_id)
+    send_inbox(chat_id)
 
 
-# ---------- ОБРАБОТКА MESSAGE ----------
+def handle_edit_task_text(chat_id, text, task_id):
+    ok, task = update_task_text(task_id, text)
+    if not ok:
+        send_message(chat_id, "Не нашла эту задачу.")
+        return
+    send_message(chat_id, "Обновила.")
+    card = render_task_card(task)
+    kb = task_inline_keyboard(task_id)
+    send_message(chat_id, card, reply_markup=kb)
+
+
+def handle_done_comment(chat_id, text, task_id):
+    from storage import save_tasks, load_tasks
+    tasks = load_tasks()
+    for t in tasks:
+        if t["id"] == task_id:
+            if text.strip() != "-":
+                t["done_comment"] = text.strip()
+            save_tasks(tasks)
+            send_message(chat_id, "Сохранила комментарий.")
+            return
+    send_message(chat_id, "Не нашла задачу.")
+
+
+# ---------- MESSAGE ----------
 
 def handle_text_message(message):
     chat_id = message["chat"]["id"]
     text = (message.get("text") or "").strip()
-
-    # state (ожидаем следующий шаг)
     pending = get_pending_action() or {}
 
-    # 1. специальные режимы (редактирование, добавление и т.п.)
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -304,215 +203,124 @@ def handle_text_message(message):
             handle_add_inbox_text(chat_id, text)
             return
         if ptype == "edit_task":
-            task_id = pending.get("task_id")
+            task_id = int(pending["task_id"])
             set_pending_action(None)
-            if task_id is None:
-                send_message(chat_id, "Что-то пошло не так: не знаю, какую задачу редактировать.")
-                return
-            handle_edit_task_text(chat_id, text, int(task_id))
+            handle_edit_task_text(chat_id, text, task_id)
             return
         if ptype == "done_comment":
-            task_id = pending.get("task_id")
+            task_id = int(pending["task_id"])
             set_pending_action(None)
-            if task_id is None:
-                send_message(chat_id, "Что-то пошло не так: не знаю, к какой задаче добавить комментарий.")
-                return
-            handle_done_comment(chat_id, text, int(task_id))
-            return
-        if ptype == "add_today":
-            set_pending_action(None)
-            handle_add_today_text(chat_id, text)
+            handle_done_comment(chat_id, text, task_id)
             return
 
-    # 2. обычные команды и кнопки
     if text == "/start":
         send_message(
             chat_id,
             "Привет! Это твой планировщик.\n\n"
-            "📥 Инбокс — собрать и разобрать задачи\n"
-            "📅 Сегодня — задачи на сегодня\n\n"
-            "Можешь начать с кнопки «📥 Инбокс».",
+            "Используй кнопки ниже.",
             reply_markup=main_keyboard(),
         )
         return
 
     if text in ("/menu", "⚙️ Меню"):
-        send_message(
-            chat_id,
-            "Главное меню.\n\n"
-            "📥 Инбокс — собрать и разобрать задачи\n"
-            "📅 Сегодня — задачи на сегодня\n",
-            reply_markup=main_keyboard(),
-        )
+        send_message(chat_id, "Главное меню.", reply_markup=main_keyboard())
         return
 
     if text in ("/inbox", "📥 Инбокс"):
         send_inbox(chat_id)
         return
 
-    if text in ("/today", "📅 Сегодня"):
-        send_today(chat_id)
+    if text == "📅 Сегодня":
+        send_message(chat_id, "Экран «Сегодня» ещё в работе.", reply_markup=main_keyboard())
         return
 
-    # по умолчанию
-    send_message(
-        chat_id,
-        "Не знаю такую команду. Нажми «⚙️ Меню», «📥 Инбокс» или «📅 Сегодня».",
-        reply_markup=main_keyboard(),
-    )
+    send_message(chat_id, "Не знаю такую команду.", reply_markup=main_keyboard())
 
 
-# ---------- ОБРАБОТКА CALLBACK_QUERY ----------
+# ---------- CALLBACK ----------
 
 def handle_callback(callback_query):
     cq_id = callback_query["id"]
     data = callback_query.get("data") or ""
-    message = callback_query.get("message") or {}
-    chat = message.get("chat") or {}
-    chat_id = chat.get("id")
-    message_id = message.get("message_id")
+    msg = callback_query.get("message") or {}
+    chat_id = msg.get("chat", {}).get("id")
+    message_id = msg.get("message_id")
 
     if not chat_id:
         answer_callback_query(cq_id)
         return
 
-    # навигация
     if data == "back_menu":
         answer_callback_query(cq_id)
-        send_message(chat_id, "Главное меню:", reply_markup=main_keyboard())
+        send_message(chat_id, "Главное меню.", reply_markup=main_keyboard())
         return
 
-    # --- ИНБОКС ---
     if data == "inbox_add":
         answer_callback_query(cq_id)
         set_pending_action({"type": "add_inbox"})
-        send_message(
-            chat_id,
-            "Отправь одну задачу или список задач (каждая с новой строки).\n"
-            "Нумерация 1., 2) и т.п. будет автоматически убрана.",
-        )
+        send_message(chat_id, "Отправь одну или несколько задач.")
         return
 
-    if data == "inbox_refresh" or data == "back_inbox":
+    if data in ("inbox_refresh", "back_inbox"):
         answer_callback_query(cq_id)
         text, tasks = render_inbox_text()
         kb = inbox_inline_keyboard(tasks)
-        if message_id:
-            try:
-                edit_message(chat_id, message_id, text, reply_markup=kb)
-            except Exception:
-                send_inbox(chat_id)
-        else:
+        try:
+            edit_message(chat_id, message_id, text, reply_markup=kb)
+        except:
             send_inbox(chat_id)
         return
 
-    # --- СЕГОДНЯ ---
-    if data == "today_add":
-        answer_callback_query(cq_id)
-        set_pending_action({"type": "add_today"})
-        send_message(
-            chat_id,
-            "Напиши одну задачу или несколько строк — я добавлю их в список «Сегодня».",
-        )
-        return
-
-    if data == "today_clear":
-        clear_today()
-        answer_callback_query(cq_id, "Список «Сегодня» очищен")
-        send_today(chat_id)
-        return
-
-    # действия с конкретными задачами
     if data.startswith("task_open:"):
-        _, sid = data.split(":", 1)
+        _, sid = data.split(":")
         tid = int(sid)
         from storage import get_task_by_id
         task = get_task_by_id(tid)
         if not task:
-            answer_callback_query(cq_id, "Задача не найдена")
+            answer_callback_query(cq_id, "Не найдено")
             return
         answer_callback_query(cq_id)
         card = render_task_card(task)
         kb = task_inline_keyboard(tid)
-        if message_id:
-            try:
-                edit_message(chat_id, message_id, card, reply_markup=kb)
-            except Exception:
-                send_message(chat_id, card, reply_markup=kb)
-        else:
+        try:
+            edit_message(chat_id, message_id, card, reply_markup=kb)
+        except:
             send_message(chat_id, card, reply_markup=kb)
         return
 
     if data.startswith("task_delete:"):
-        _, sid = data.split(":", 1)
+        _, sid = data.split(":")
         tid = int(sid)
         ok = delete_task_by_id(tid)
-        answer_callback_query(cq_id, "Удалено" if ok else "Не нашла задачу")
+        answer_callback_query(cq_id, "Удалено" if ok else "Не найдено")
         send_inbox(chat_id)
         return
 
     if data.startswith("task_edit:"):
-        _, sid = data.split(":", 1)
+        _, sid = data.split(":")
         tid = int(sid)
-        set_pending_action({"type": "edit_task", "task_id": tid})
         answer_callback_query(cq_id)
-        send_message(chat_id, f"Напиши новый текст для задачи #{tid}.")
+        set_pending_action({"type": "edit_task", "task_id": tid})
+        send_message(chat_id, "Напиши новый текст.")
         return
 
     if data.startswith("task_done:"):
-        _, sid = data.split(":", 1)
+        _, sid = data.split(":")
         tid = int(sid)
         ok, task = complete_task_by_id(tid)
         if not ok:
-            answer_callback_query(cq_id, "Не нашла задачу")
+            answer_callback_query(cq_id, "Не найдено")
             return
-        answer_callback_query(cq_id, "Отметила как выполненную")
+        answer_callback_query(cq_id, "Готово")
         set_pending_action({"type": "done_comment", "task_id": tid})
-        send_message(
-            chat_id,
-            f"Задача #{tid} отмечена как выполненная.\n"
-            "Хочешь добавить короткий комментарий (сложности, как прошло)?\n"
-            "Если нет — напиши «-».",
-        )
+        send_message(chat_id, "Добавь комментарий или «-».")
         return
 
     if data.startswith("task_today:"):
-        _, sid = data.split(":", 1)
+        _, sid = data.split(":")
         tid = int(sid)
         item = add_today_from_task(tid)
-        if not item:
-            answer_callback_query(cq_id, "Не нашла задачу")
-            return
-        answer_callback_query(cq_id, "Добавила в «Сегодня»")
+        answer_callback_query(cq_id, "Добавила" if item else "Не нашла")
         return
 
-    # если что-то неизвестное
     answer_callback_query(cq_id)
-
-
-# ---------- FLASK ROUTES ----------
-
-@app.route("/", methods=["GET"])
-def index():
-    return "Bot is running"
-
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json(force=True)
-
-    if "callback_query" in data:
-        handle_callback(data["callback_query"])
-        return "ok"
-
-    message = data.get("message")
-    if message:
-        if "text" in message:
-            handle_text_message(message)
-        # на будущее: можно обрабатывать фото/документы
-    return "ok"
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
