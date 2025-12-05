@@ -26,7 +26,7 @@ from storage import (
 
 from bot.inbox import (
     send_inbox,
-    render_inbox_text,      # ← ДОБАВИТЬ
+    render_inbox_text,
     render_task_card,
     handle_add_inbox_text,
     handle_edit_task_text,
@@ -69,20 +69,97 @@ app = Flask(__name__)
 
 # ---------- ВСПОМОГАТЕЛЬНОЕ ----------
 
+def parse_bulk_command(text: str):
+    """
+    Парсим строку вида:
+    '🗑 1 3 5'  -> ('🗑', [1, 3, 5])
+    '➡️ 2'      -> ('➡️', [2])
+    """
+    parts = (text or "").strip().split()
+    if not parts:
+        return None, []
 
-# ---------- КЛАВИАТУРЫ ----------
+    cmd = parts[0]
+    ids = []
+    for p in parts[1:]:
+        if p.isdigit():
+            ids.append(int(p))
+
+    return cmd, ids
 
 
+def handle_reply_command(chat_id, text, reply_msg):
+    """
+    Обработка reply-команд к спискам:
+    - Ответ на сообщение со списком инбокса или "Сегодня"
+    - Команды-эмодзи:
+        🗑 1 3       — удалить задачи
+        ➡️ 2 4       — перенести в «Сегодня»
+        ☑ 5 6        — отметить выполненными
 
-# ---------- ИНБОКС ----------
+    Возвращает True, если команда обработана, иначе False.
+    """
+    original_text = (reply_msg.get("text") or "")
 
+    # Определяем контекст: инбокс или сегодня
+    context = None
+    if original_text.startswith("Твой инбокс:") or "Инбокс пуст" in original_text:
+        context = "inbox"
+    elif original_text.startswith("Задачи на сегодня:") or "На сегодня пока ничего нет" in original_text:
+        context = "today"
+    else:
+        return False  # это не список задач — не трогаем
 
-# ---------- СЕГОДНЯ ----------
+    cmd, ids = parse_bulk_command(text)
+    if not cmd or not ids:
+        return False
 
+    # Маппинг команд
+    deleted = []
+    moved_today = []
+    done_list = []
 
+    # Удаление
+    if cmd in ("🗑", "🗑️"):
+        for tid in ids:
+            ok = delete_task_by_id(tid)
+            if ok:
+                deleted.append(tid)
+        if deleted:
+            send_message(chat_id, f"Удалены задачи: {', '.join(map(str, deleted))}")
+        else:
+            send_message(chat_id, "Не нашла ни одной задачи для удаления.")
+    # Перенос в «Сегодня»
+    elif cmd in ("➡️", "➡"):
+        for tid in ids:
+            item = add_today_from_task(tid)
+            if item:
+                moved_today.append(tid)
+        if moved_today:
+            send_message(chat_id, f"Перенесла в «Сегодня»: {', '.join(map(str, moved_today))}")
+        else:
+            send_message(chat_id, "Не получилось перенести задачи в «Сегодня».")
+    # Отметить выполненными (без комментариев, просто галочка)
+    elif cmd in ("☑", "✅"):
+        for tid in ids:
+            ok, _ = complete_task_by_id(tid)
+            if ok:
+                done_list.append(tid)
+        if done_list:
+            send_message(chat_id, f"Отметила выполненными: {', '.join(map(str, done_list))}")
+        else:
+            send_message(chat_id, "Не получилось отметить задачи выполненными.")
+    else:
+        # Неизвестная команда — не обрабатываем
+        return False
 
-# ---------- РУТИНЫ / ШАБЛОНЫ / ПРОЕКТЫ / SOS / ПРИВЫЧКИ ----------
+    # Обновляем соответствующий список
+    if context == "inbox":
+        send_inbox(chat_id)
+    else:
+        send_today(chat_id)
 
+    return True
 
 
 # ---------- MESSAGE ----------
@@ -92,7 +169,14 @@ def handle_text_message(message):
     text = (message.get("text") or "").strip()
     pending = get_pending_action() or {}
 
-    # отложенное действие
+    # 0. Если есть reply на список — пробуем обработать как мульти-команду
+    reply_msg = message.get("reply_to_message")
+    if not pending and reply_msg:
+        handled = handle_reply_command(chat_id, text, reply_msg)
+        if handled:
+            return
+
+    # 1. Отложенное действие (редактирование, добавление и т.п.)
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -110,7 +194,7 @@ def handle_text_message(message):
             handle_done_comment(chat_id, text, task_id)
             return
 
-    # команды / кнопки
+    # 2. Команды / кнопки
     if text == "/start":
         send_message(
             chat_id,
@@ -182,7 +266,7 @@ def handle_text_message(message):
         send_message(chat_id, "Твои привычки:", reply_markup=kb)
         return
 
-    # по умолчанию — считаем текст списком задач для инбокса
+    # 3. По умолчанию — считаем текст списком задач для инбокса
     handle_add_inbox_text(chat_id, text)
 
 
@@ -222,6 +306,7 @@ def handle_callback(callback_query):
             send_inbox(chat_id)
         return
 
+    # обновление экрана «Сегодня»
     if data == "today_refresh":
         answer_callback_query(cq_id)
         if message_id:
@@ -230,6 +315,7 @@ def handle_callback(callback_query):
             send_today(chat_id)
         return
 
+    # карточка задачи
     if data.startswith("task_open:"):
         _, sid = data.split(":")
         tid = int(sid)
