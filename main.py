@@ -32,6 +32,13 @@ from bot.inbox import (
     handle_done_comment,
 )
 
+from bot.keyboards import (
+    main_keyboard,
+    inbox_inline_keyboard,
+    today_inline_keyboard,
+    task_inline_keyboard,
+    simple_list_keyboard,
+)
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 if not TOKEN:
@@ -82,75 +89,9 @@ def answer_callback_query(callback_query_id, text=None, show_alert=False):
 
 # ---------- КЛАВИАТУРЫ ----------
 
-def main_keyboard():
-    return {
-        "keyboard": [
-            [{"text": "📥 Инбокс"}, {"text": "📅 Сегодня"}],
-            [{"text": "🔁 Рутины"}, {"text": "📋 Шаблоны"}, {"text": "📂 Проекты"}],
-            [{"text": "🆘 SOS"}, {"text": "📊 Привычки"}, {"text": "⚙️ Меню"}],
-        ],
-        "resize_keyboard": True,
-    }
-
-
-def inbox_inline_keyboard(tasks):
-    task_buttons = []
-    for t in tasks:
-        btn = {
-            "text": f"#{t['id']}",
-            "callback_data": f"task_open:{t['id']}",
-        }
-        task_buttons.append([btn])
-
-    common = [
-        [
-            {"text": "➕ Добавить", "callback_data": "inbox_add"},
-            {"text": "🔄 Обновить", "callback_data": "inbox_refresh"},
-        ],
-        [{"text": "⬅️ В меню", "callback_data": "back_menu"}],
-    ]
-    return {"inline_keyboard": common + task_buttons}
-
-
-def task_inline_keyboard(task_id):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Готово", "callback_data": f"task_done:{task_id}"},
-                {"text": "✏️ Редактировать", "callback_data": f"task_edit:{task_id}"},
-            ],
-            [
-                {"text": "🗑 Удалить", "callback_data": f"task_delete:{task_id}"},
-                {"text": "➡️ В Сегодня", "callback_data": f"task_today:{task_id}"},
-            ],
-            [
-                {"text": "⬅️ В инбокс", "callback_data": "back_inbox"},
-            ],
-        ]
-    }
-
-
-def simple_list_keyboard(prefix, items):
-    """
-    Универсальная инлайн-клавиатура для списков сущностей.
-    prefix: 'routine', 'template', 'project', 'sos', 'habit'
-    """
-    rows = []
-    for it in items:
-        text = f"{it.get('id', '')}. {it.get('name', 'Без названия')}"
-        rows.append([{
-            "text": text,
-            "callback_data": f"{prefix}_open:{it['id']}"
-        }])
-    rows.append([{"text": "⬅️ В меню", "callback_data": "back_menu"}])
-    return {"inline_keyboard": rows}
 
 
 # ---------- ИНБОКС ----------
-
-
-
-
 
 
 # ---------- СЕГОДНЯ ----------
