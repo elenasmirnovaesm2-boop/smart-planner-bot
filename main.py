@@ -69,19 +69,6 @@ app = Flask(__name__)
 
 # ---------- СЕГОДНЯ ----------
 
-def render_today_text():
-    items = list_today()
-    if not items:
-        return "На сегодня пока ничего нет.\n\nИз карточки задачи нажми «➡️ В Сегодня»."
-    lines = ["Задачи на сегодня:"]
-    for it in items:
-        lines.append(f"- {it['text']}")
-    return "\n".join(lines)
-
-
-def send_today(chat_id):
-    text = render_today_text()
-    send_message(chat_id, text, reply_markup=main_keyboard())
 
 
 # ---------- РУТИНЫ / ШАБЛОНЫ / ПРОЕКТЫ / SOS / ПРИВЫЧКИ ----------
