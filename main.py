@@ -48,6 +48,13 @@ from bot.telegram_api import (
     answer_callback_query,
 )
 
+from bot.entities import (
+    render_routine_card,
+    render_template_card,
+    render_project_card,
+    render_sos_card,
+    render_habit_card,
+)
 
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -212,6 +219,14 @@ def handle_callback(callback_query):
             edit_message(chat_id, message_id, text, reply_markup=kb)
         except Exception:
             send_inbox(chat_id)
+        return
+
+   if data == "today_refresh":
+        answer_callback_query(cq_id)
+        if message_id:
+            refresh_today(chat_id, message_id)
+        else:
+            send_today(chat_id)
         return
 
     if data.startswith("task_open:"):
