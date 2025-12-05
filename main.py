@@ -381,8 +381,8 @@ def handle_text_message(message):
         send_message(chat_id, "Твои привычки:", reply_markup=kb)
         return
 
-    # по умолчанию
-    send_message(chat_id, "Не знаю такую команду. Нажми «⚙️ Меню».", reply_markup=main_keyboard())
+    # по умолчанию — считаем текст списком задач для инбокса
+    handle_add_inbox_text(chat_id, text)
 
 
 # ---------- CALLBACK ----------
@@ -512,8 +512,8 @@ def handle_callback(callback_query):
     if data.startswith("sos_open:"):
         _, sid = data.split(":")
         sid_int = int(sid)
-        sos_list = list_sos()
-        s = next((x for x in sos_list if x["id"] == sid_int), None)
+        sos_items = list_sos()
+        s = next((x for x in sos_items if x["id"] == sid_int), None)
         if not s:
             answer_callback_query(cq_id, "Не нашла SOS")
             return
