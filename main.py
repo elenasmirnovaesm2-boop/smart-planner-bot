@@ -1,17 +1,27 @@
 import os
 import re
+import datetime
 import requests
 from flask import Flask, request
 
 from storage import (
+    # задачи
     add_task,
     list_active_tasks,
     complete_task_by_id,
     delete_task_by_id,
     update_task_text,
     add_today_from_task,
+    list_today,
     set_pending_action,
     get_pending_action,
+    get_task_by_id,
+    # сущности
+    list_routines,
+    list_templates,
+    list_projects,
+    list_sos,
+    list_habits,
 )
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -67,7 +77,8 @@ def main_keyboard():
     return {
         "keyboard": [
             [{"text": "📥 Инбокс"}, {"text": "📅 Сегодня"}],
-            [{"text": "⚙️ Меню"}],
+            [{"text": "🔁 Рутины"}, {"text": "📋 Шаблоны"}, {"text": "📂 Проекты"}],
+            [{"text": "🆘 SOS"}, {"text": "📊 Привычки"}, {"text": "⚙️ Меню"}],
         ],
         "resize_keyboard": True,
     }
@@ -110,6 +121,22 @@ def task_inline_keyboard(task_id):
     }
 
 
+def simple_list_keyboard(prefix, items):
+    """
+    Универсальная инлайн-клавиатура для списков сущностей.
+    prefix: 'routine', 'template', 'project', 'sos', 'habit'
+    """
+    rows = []
+    for it in items:
+        text = f"{it.get('id', '')}. {it.get('name', 'Без названия')}"
+        rows.append([{
+            "text": text,
+            "callback_data": f"{prefix}_open:{it['id']}"
+        }])
+    rows.append([{"text": "⬅️ В меню", "callback_data": "back_menu"}])
+    return {"inline_keyboard": rows}
+
+
 # ---------- ИНБОКС ----------
 
 def render_inbox_text():
@@ -133,10 +160,20 @@ def render_task_card(task):
     status = "выполнена ✅" if task.get("done") else "не выполнена"
     comment = task.get("done_comment")
     comment_part = f"\nКомментарий: {comment}" if comment else ""
+
+    created_part = ""
+    created = task.get("created_at")
+    if created:
+        try:
+            dt = datetime.datetime.fromisoformat(created.replace("Z", ""))
+            created_part = "\nСоздана: " + dt.strftime("%d.%m %H:%M")
+        except Exception:
+            created_part = "\nСоздана: " + str(created)
+
     return (
         f"Задача #{task['id']}\n\n"
         f"Текст: {task['text']}\n"
-        f"Статус: {status}{comment_part}"
+        f"Статус: {status}{comment_part}{created_part}"
     )
 
 
@@ -149,7 +186,6 @@ def handle_add_inbox_text(chat_id, text):
         return
 
     created = []
-
     for ln in lines:
         ln = re.sub(r"^\s*[\-\d]+[\.\)]\s*", "", ln).strip()
         if not ln:
@@ -189,6 +225,65 @@ def handle_done_comment(chat_id, text, task_id):
     send_message(chat_id, "Не нашла задачу.")
 
 
+# ---------- СЕГОДНЯ ----------
+
+def render_today_text():
+    items = list_today()
+    if not items:
+        return "На сегодня пока ничего нет.\n\nИз карточки задачи нажми «➡️ В Сегодня»."
+    lines = ["Задачи на сегодня:"]
+    for it in items:
+        lines.append(f"- {it['text']}")
+    return "\n".join(lines)
+
+
+def send_today(chat_id):
+    text = render_today_text()
+    send_message(chat_id, text, reply_markup=main_keyboard())
+
+
+# ---------- РУТИНЫ / ШАБЛОНЫ / ПРОЕКТЫ / SOS / ПРИВЫЧКИ ----------
+
+def render_routine_card(r):
+    steps = r.get("steps", [])
+    lines = [f"🔁 Рутина: {r['name']}", ""]
+    for i, s in enumerate(steps, start=1):
+        lines.append(f"{i}. {s}")
+    return "\n".join(lines)
+
+
+def render_template_card(tpl):
+    blocks = tpl.get("blocks", [])
+    lines = [f"📋 Шаблон дня: {tpl['name']}", ""]
+    for b in blocks:
+        lines.append(f"- {b}")
+    return "\n".join(lines)
+
+
+def render_project_card(p):
+    steps = p.get("steps", [])
+    lines = [f"📂 Проект: {p['name']}", ""]
+    if not steps:
+        lines.append("Пока без разбивки на шаги.")
+    else:
+        for s in steps:
+            mark = "✅" if s.get("done") else "⬜"
+            lines.append(f"{mark} {s['id']}. {s['text']}")
+    return "\n".join(lines)
+
+
+def render_sos_card(s):
+    steps = s.get("steps", [])
+    lines = [f"🆘 SOS: {s['name']}", ""]
+    for i, st in enumerate(steps, start=1):
+        lines.append(f"{i}. {st}")
+    return "\n".join(lines)
+
+
+def render_habit_card(h):
+    return f"📊 Привычка: {h['name']}\n\nПлан: {h.get('schedule', '')}"
+
+
 # ---------- MESSAGE ----------
 
 def handle_text_message(message):
@@ -196,6 +291,7 @@ def handle_text_message(message):
     text = (message.get("text") or "").strip()
     pending = get_pending_action() or {}
 
+    # отложенное действие
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -213,11 +309,12 @@ def handle_text_message(message):
             handle_done_comment(chat_id, text, task_id)
             return
 
+    # команды / кнопки
     if text == "/start":
         send_message(
             chat_id,
             "Привет! Это твой планировщик.\n\n"
-            "Используй кнопки ниже.",
+            "Используй кнопки ниже для работы с задачами, рутинами и шаблонами.",
             reply_markup=main_keyboard(),
         )
         return
@@ -230,11 +327,62 @@ def handle_text_message(message):
         send_inbox(chat_id)
         return
 
-    if text == "📅 Сегодня":
-        send_message(chat_id, "Экран «Сегодня» ещё в работе.", reply_markup=main_keyboard())
+    if text in ("📅 Сегодня", "/today"):
+        send_today(chat_id)
         return
 
-    send_message(chat_id, "Не знаю такую команду.", reply_markup=main_keyboard())
+    # РУТИНЫ
+    if text in ("🔁 Рутины", "/routines"):
+        routines = list_routines()
+        if not routines:
+            send_message(chat_id, "Пока нет рутин.", reply_markup=main_keyboard())
+            return
+        kb = simple_list_keyboard("routine", routines)
+        send_message(chat_id, "Твои рутины:", reply_markup=kb)
+        return
+
+    # ШАБЛОНЫ ДНЯ
+    if text in ("📋 Шаблоны", "/templates"):
+        templates = list_templates()
+        if not templates:
+            send_message(chat_id, "Пока нет шаблонов дня.", reply_markup=main_keyboard())
+            return
+        kb = simple_list_keyboard("template", templates)
+        send_message(chat_id, "Твои шаблоны дня:", reply_markup=kb)
+        return
+
+    # ПРОЕКТЫ
+    if text in ("📂 Проекты", "/projects"):
+        projects = list_projects()
+        if not projects:
+            send_message(chat_id, "Пока нет проектов.", reply_markup=main_keyboard())
+            return
+        kb = simple_list_keyboard("project", projects)
+        send_message(chat_id, "Твои проекты:", reply_markup=kb)
+        return
+
+    # SOS
+    if text in ("🆘 SOS", "/sos"):
+        sos_list = list_sos()
+        if not sos_list:
+            send_message(chat_id, "Пока нет SOS-чеклистов.", reply_markup=main_keyboard())
+            return
+        kb = simple_list_keyboard("sos", sos_list)
+        send_message(chat_id, "Твои SOS-чеклисты:", reply_markup=kb)
+        return
+
+    # ПРИВЫЧКИ
+    if text in ("📊 Привычки", "/habits"):
+        habits = list_habits()
+        if not habits:
+            send_message(chat_id, "Пока нет привычек.", reply_markup=main_keyboard())
+            return
+        kb = simple_list_keyboard("habit", habits)
+        send_message(chat_id, "Твои привычки:", reply_markup=kb)
+        return
+
+    # по умолчанию
+    send_message(chat_id, "Не знаю такую команду. Нажми «⚙️ Меню».", reply_markup=main_keyboard())
 
 
 # ---------- CALLBACK ----------
@@ -250,11 +398,13 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id)
         return
 
+    # навигация
     if data == "back_menu":
         answer_callback_query(cq_id)
         send_message(chat_id, "Главное меню.", reply_markup=main_keyboard())
         return
 
+    # инбокс
     if data == "inbox_add":
         answer_callback_query(cq_id)
         set_pending_action({"type": "add_inbox"})
@@ -267,14 +417,13 @@ def handle_callback(callback_query):
         kb = inbox_inline_keyboard(tasks)
         try:
             edit_message(chat_id, message_id, text, reply_markup=kb)
-        except:
+        except Exception:
             send_inbox(chat_id)
         return
 
     if data.startswith("task_open:"):
         _, sid = data.split(":")
         tid = int(sid)
-        from storage import get_task_by_id
         task = get_task_by_id(tid)
         if not task:
             answer_callback_query(cq_id, "Не найдено")
@@ -284,7 +433,7 @@ def handle_callback(callback_query):
         kb = task_inline_keyboard(tid)
         try:
             edit_message(chat_id, message_id, card, reply_markup=kb)
-        except:
+        except Exception:
             send_message(chat_id, card, reply_markup=kb)
         return
 
@@ -323,4 +472,92 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id, "Добавила" if item else "Не нашла")
         return
 
+    # карточки сущностей
+    if data.startswith("routine_open:"):
+        _, sid = data.split(":")
+        rid = int(sid)
+        routines = list_routines()
+        r = next((x for x in routines if x["id"] == rid), None)
+        if not r:
+            answer_callback_query(cq_id, "Не нашла рутину")
+            return
+        answer_callback_query(cq_id)
+        send_message(chat_id, render_routine_card(r), reply_markup=main_keyboard())
+        return
+
+    if data.startswith("template_open:"):
+        _, sid = data.split(":")
+        tid = int(sid)
+        templates = list_templates()
+        tpl = next((x for x in templates if x["id"] == tid), None)
+        if not tpl:
+            answer_callback_query(cq_id, "Не нашла шаблон")
+            return
+        answer_callback_query(cq_id)
+        send_message(chat_id, render_template_card(tpl), reply_markup=main_keyboard())
+        return
+
+    if data.startswith("project_open:"):
+        _, sid = data.split(":")
+        pid = int(sid)
+        projects = list_projects()
+        p = next((x for x in projects if x["id"] == pid), None)
+        if not p:
+            answer_callback_query(cq_id, "Не нашла проект")
+            return
+        answer_callback_query(cq_id)
+        send_message(chat_id, render_project_card(p), reply_markup=main_keyboard())
+        return
+
+    if data.startswith("sos_open:"):
+        _, sid = data.split(":")
+        sid_int = int(sid)
+        sos_list = list_sos()
+        s = next((x for x in sos_list if x["id"] == sid_int), None)
+        if not s:
+            answer_callback_query(cq_id, "Не нашла SOS")
+            return
+        answer_callback_query(cq_id)
+        send_message(chat_id, render_sos_card(s), reply_markup=main_keyboard())
+        return
+
+    if data.startswith("habit_open:"):
+        _, sid = data.split(":")
+        hid = int(sid)
+        habits = list_habits()
+        h = next((x for x in habits if x["id"] == hid), None)
+        if not h:
+            answer_callback_query(cq_id, "Не нашла привычку")
+            return
+        answer_callback_query(cq_id)
+        send_message(chat_id, render_habit_card(h), reply_markup=main_keyboard())
+        return
+
     answer_callback_query(cq_id)
+
+
+# ---------- FLASK ROUTES ----------
+
+@app.route("/", methods=["GET"])
+def index():
+    return "Bot is running"
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(force=True)
+
+    if "callback_query" in data:
+        handle_callback(data["callback_query"])
+        return "ok"
+
+    message = data.get("message")
+    if message and "text" in message:
+        handle_text_message(message)
+
+    return "ok"
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
