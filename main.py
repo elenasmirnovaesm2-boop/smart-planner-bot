@@ -368,7 +368,7 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id, "Добавила" if item else "Не нашла")
         return
 
-if data.startswith("task_to_routine:"):
+    if data.startswith("task_to_routine:"):
         _, sid = data.split(":", 1)
         tid = int(sid)
 
