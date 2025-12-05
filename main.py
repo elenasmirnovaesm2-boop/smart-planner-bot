@@ -368,6 +368,27 @@ def handle_callback(callback_query):
         answer_callback_query(cq_id, "Добавила" if item else "Не нашла")
         return
 
+if data.startswith("task_to_routine:"):
+        _, sid = data.split(":", 1)
+        tid = int(sid)
+
+        task = get_task_by_id(tid)
+        if not task:
+            answer_callback_query(cq_id, "Не нашла задачу")
+            return
+
+        # создаём рутину: название = текст задачи, шаги = один шаг с этим текстом
+        routine = add_routine(task["text"], [task["text"]])
+
+        answer_callback_query(cq_id, "Создала рутину")
+        send_message(
+            chat_id,
+            f"Создала рутину #{routine['id']} на основе задачи #{tid}.\n\n"
+            f"Название: {routine['name']}",
+            reply_markup=main_keyboard(),
+        )
+        return
+
     # карточки сущностей
     if data.startswith("routine_open:"):
         _, sid = data.split(":")
