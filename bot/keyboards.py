@@ -75,6 +75,7 @@ def task_inline_keyboard(task_id):
                 {"text": "➡️ В Сегодня", "callback_data": f"task_today:{task_id}"},
             ],
             [
+                {"text": "🔁 В рутину", "callback_data": f"task_to_routine:{task_id}"},
                 {"text": "⬅️ В инбокс", "callback_data": "back_inbox"},
             ],
         ]
