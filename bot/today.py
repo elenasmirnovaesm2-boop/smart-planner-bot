@@ -9,10 +9,12 @@ def render_today_text():
         return (
             "На сегодня пока ничего нет.\n\n"
             "Открой задачу из инбокса и нажми «➡️ В Сегодня».",
-            items,
+            [],
         )
 
     lines = ["Задачи на сегодня:"]
+    valid_items = []
+
     for it in items:
         task_id = it.get("task_id")
         if not task_id:
@@ -22,11 +24,17 @@ def render_today_text():
             continue
         mark = "✅" if task.get("done") else "[ ]"
         lines.append(f"{task['id']}. {mark} {task['text']}")
+        valid_items.append(it)
 
-    if len(lines) == 1:
-        lines.append("Похоже, задачи были удалены. Добавь новые из инбокса.")
+    if len(valid_items) == 0:
+        # все задачи из today уже удалены
+        return (
+            "Похоже, задачи, которые были в «Сегодня», уже удалены.\n\n"
+            "Добавь новые задачи из инбокса.",
+            [],
+        )
 
-    return "\n".join(lines), items
+    return "\n".join(lines), valid_items
 
 
 def send_today(chat_id):
