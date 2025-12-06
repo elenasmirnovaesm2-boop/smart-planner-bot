@@ -24,7 +24,7 @@ from bot.inbox import (
     handle_add_inbox_text,
     handle_edit_task_text,
     handle_done_comment,
-    handle_inbox_reply,   # ← НОВОЕ
+    handle_merge_command,   # ← добавили
 )
 
 from bot.today import send_today, refresh_today
@@ -65,15 +65,6 @@ def handle_text_message(message):
     text = (message.get("text") or "").strip()
     pending = get_pending_action() or {}
 
-    # если это ответ (reply) на сообщение бота — сначала смотрим контекст
-    reply_to = message.get("reply_to_message")
-    if reply_to and reply_to.get("text"):
-        first_line = reply_to["text"].splitlines()[0].strip()
-        # ответ на инбокс
-        if first_line.startswith("📥 INBOX"):
-            handle_inbox_reply(chat_id, text)
-            return
-
     # отложенное действие
     if pending:
         ptype = pending.get("type")
@@ -91,6 +82,12 @@ def handle_text_message(message):
             set_pending_action(None)
             handle_done_comment(chat_id, text, task_id)
             return
+
+    # --- КОМАНДА MERGE ДЛЯ ИНБОКСА ---
+    low = text.lower()
+    if low.startswith("merge "):
+        handle_merge_command(chat_id, text)
+        return
 
     # команды / кнопки
     if text == "/start":
