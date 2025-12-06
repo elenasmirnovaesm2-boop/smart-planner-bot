@@ -9,7 +9,6 @@ from storage import (
     update_task_text,
     complete_task_by_id,
     delete_task_by_id,
-    add_today_from_task,
 )
 
 
@@ -45,18 +44,9 @@ def parse_task_ids(text: str):
 def render_inbox_text():
     tasks = list_active_tasks()
     if not tasks:
-        return (
-            "📥 INBOX\n\n"
-            "Инбокс пуст.\n\n"
-            "Нажми «➕ Добавить», чтобы создать задачи.",
-            tasks,
-        )
+        return "Инбокс пуст.\n\nНажми «➕ Добавить», чтобы создать задачи.", tasks
 
-    lines = [
-        "📥 INBOX",
-        "",
-        "Твой инбокс:",
-    ]
+    lines = ["Твой инбокс:"]
     for t in tasks:
         lines.append(f"{t['id']}. [ ] {t['text']}")
     return "\n".join(lines), tasks
@@ -143,83 +133,45 @@ def handle_done_comment(chat_id, text, task_id):
     send_message(chat_id, "Не нашла задачу.")
 
 
-def handle_inbox_reply(chat_id, text):
+def handle_merge_command(chat_id, raw_text: str):
     """
-    Обработка ответов на сообщение с инбоксом:
-    ✅ 1 2 5-7  -> отметить выполненными
-    ❌ 1 3      -> удалить
-    📆 2 4      -> в «Сегодня»
-    ➕ новая задача -> добавить задачу(и)
-    Также можно вместо номеров писать кусок текста: ✅ посуда
+    merge 1 2 5-7
+    → создаёт новую задачу-блок с подзадачами (+ ...)
+    → исходные задачи помечает выполненными (они пропадают из инбокса)
     """
-    from bot.telegram_api import send_message
+    from bot.telegram_api import send_message  # локальный импорт, чтобы не ловить циклы
 
-    text = (text or "").strip()
-    if not text:
-        send_message(chat_id, "Напиши команду и номера задач или текст.")
+    # убираем слово 'merge'
+    args = raw_text[len("merge"):].strip()
+    if not args:
+        send_message(chat_id, "После merge укажи номера задач, например: merge 1 2 5-7")
         return
 
-    cmd = text[0]
-    rest = text[1:].strip()
+    ids = parse_task_ids(args)
+    if not ids:
+        send_message(chat_id, "Не поняла номера задач. Пример: merge 1 2 5-7")
+        return
 
     tasks = list_active_tasks()
+    selected = [t for t in tasks if t["id"] in ids]
 
-    # 1. пробуем вытащить номера
-    ids = parse_task_ids(rest)
-
-    # 2. если номеров нет, но есть текст — ищем по подстроке
-    if not ids and rest:
-        query = rest.lower()
-        for t in tasks:
-            if query in t["text"].lower():
-                ids.add(t["id"])
-
-    if cmd in ("➕", "+"):
-        # добавление новых задач: весь rest — текст (можно с переносами строк)
-        if not rest:
-            send_message(chat_id, "После ➕ напиши текст задачи.")
-            return
-        handle_add_inbox_text(chat_id, rest)
+    if not selected:
+        send_message(chat_id, "Не нашла эти задачи в инбоксе.")
         return
 
-    if not ids:
-        send_message(chat_id, "Не нашла задачи по этим номерам или тексту.")
-        return
+    # формируем текст блока: каждая подзадача с префиксом "+ "
+    merged_lines = [f"+ {t['text']}" for t in selected]
+    merged_text = "\n".join(merged_lines)
 
-    if cmd in ("❌", "🗑"):
-        count = 0
-        for tid in ids:
-            if delete_task_by_id(tid):
-                count += 1
-        send_message(chat_id, f"Удалено задач: {count}.")
-        send_inbox(chat_id)
-        return
+    new_task = add_task(merged_text)
 
-    if cmd in ("✅", "✔"):
-        count = 0
-        for tid in ids:
-            ok, _ = complete_task_by_id(tid)
-            if ok:
-                count += 1
-        send_message(chat_id, f"Отметила выполненными: {count}.")
-        send_inbox(chat_id)
-        return
+    # исходные задачи помечаем выполненными, чтобы не засоряли инбокс
+    for t in selected:
+        complete_task_by_id(t["id"])
 
-    if cmd in ("📆", "🗓"):
-        count = 0
-        for tid in ids:
-            item = add_today_from_task(tid)
-            if item:
-                count += 1
-        send_message(chat_id, f"Добавила в «Сегодня»: {count}.")
-        return
-
+    sel_ids_str = ", ".join(str(t["id"]) for t in selected)
     send_message(
         chat_id,
-        "Не поняла команду.\n"
-        "Примеры:\n"
-        "✅ 1 2 4-5 — отметить выполненными\n"
-        "❌ 3 — удалить\n"
-        "📆 1 2 — добавить в «Сегодня»\n"
-        "✅ посуда — найти по тексту и отметить выполненной",
+        f"Создала блок-задачу #{new_task['id']} из задач: {sel_ids_str}",
     )
+    send_inbox(chat_id)
