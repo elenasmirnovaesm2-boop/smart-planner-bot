@@ -11,6 +11,35 @@ from storage import (
     delete_task_by_id,
 )
 
+
+def parse_task_ids(text: str):
+    """
+    Парсит строку с номерами задач: '1 2 5-7' -> {1,2,5,6,7}
+    Поддерживает пробелы, запятые и диапазоны через '-'.
+    """
+    ids = set()
+    parts = re.split(r"[,\s]+", text.strip())
+    for part in parts:
+        if not part:
+            continue
+        if "-" in part:
+            try:
+                start_s, end_s = part.split("-", 1)
+                start = int(start_s)
+                end = int(end_s)
+                if start > end:
+                    start, end = end, start
+                for i in range(start, end + 1):
+                    ids.add(i)
+            except ValueError:
+                continue
+        else:
+            try:
+                ids.add(int(part))
+            except ValueError:
+                continue
+    return ids
+
 def render_inbox_text():
     tasks = list_active_tasks()
     if not tasks:
