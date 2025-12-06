@@ -1,125 +1,42 @@
-# bot/keyboards.py
+"""
+Defines the main reply keyboard for the bot.
 
-def main_keyboard():
+This version extends the main keyboard with a “ℹ️ Команды” button so
+users can quickly access a list of text commands. It intentionally
+omits any inline keyboards for individual tasks; management is done via
+text commands instead.
+"""
+
+
+def main_keyboard() -> dict:
+    """
+    Return the main reply keyboard layout. Includes buttons for the inbox
+    and other entity lists (Сегодня, рутины, шаблоны, проекты, SOS, привычки)
+    plus a separate button for the commands list.
+    """
     return {
         "keyboard": [
-            [{"text": "📥 Инбокс"}, {"text": "📅 Сегодня"}],
-            [{"text": "🔁 Рутины"}, {"text": "📋 Шаблоны"}, {"text": "📂 Проекты"}],
-            [{"text": "🆘 SOS"}, {"text": "📊 Привычки"}, {"text": "⚙️ Меню"}],
+            [{"text": "📝 Инбокс"}, {"text": "📅 Сегодня"}],
+            [{"text": "📋 Рутины"}, {"text": "📅 Шаблоны"}, {"text": "📦 Проекты"}],
+            [{"text": "🆘 SOS"}, {"text": "🔥 Привычки"}, {"text": "🔆 Меню"}, {"text": "ℹ️ Команды"}],
         ],
         "resize_keyboard": True,
     }
 
 
-def inbox_inline_keyboard(tasks):
+def inbox_inline_keyboard(tasks: list) -> dict:
     """
-    Кнопки для инбокса: показываем номер и короткий текст задачи.
-    Пример: "1. Купить молоко".
+    Return an empty inline keyboard. Formerly, this built buttons for each
+    task, but we’ve removed inline keyboards in favor of text commands.
     """
-    task_buttons = []
-    for t in tasks:
-        full_text = t.get("text", "") or "(без текста)"
-        short = (full_text[:25] + "…") if len(full_text) > 25 else full_text
-        label = f"{t['id']}. {short}"
-
-        btn = {
-            "text": label,
-            "callback_data": f"task_open:{t['id']}",
-        }
-        task_buttons.append([btn])
-
-    common = [
-        [
-            {"text": "➕ Добавить", "callback_data": "inbox_add"},
-            {"text": "🔄 Обновить", "callback_data": "inbox_refresh"},
-        ],
-        [{"text": "⬅️ В меню", "callback_data": "back_menu"}],
-    ]
-    return {"inline_keyboard": common + task_buttons}
+    # Returning an empty inline keyboard structure keeps compatibility with
+    # callers that still expect a dict. It will not render buttons.
+    return {"inline_keyboard": []}
 
 
-def today_inline_keyboard(tasks_for_buttons):
+def task_inline_keyboard(task_id: int) -> dict:
     """
-    Кнопки для «Сегодня».
-    tasks_for_buttons: список словарей {"id": ..., "text": ...}
+    Return an empty inline keyboard for a task. See inbox_inline_keyboard
+    for discussion. Individual task actions are now handled via text commands.
     """
-    task_buttons = []
-    for t in tasks_for_buttons:
-        task_id = t["id"]
-        full_text = t.get("text", "") or "(без текста)"
-        short = (full_text[:25] + "…") if len(full_text) > 25 else full_text
-        label = f"{task_id}. {short}"
-
-        btn = {
-            "text": label,
-            "callback_data": f"task_open:{task_id}",
-        }
-        task_buttons.append([btn])
-
-    common = [
-        [{"text": "🔄 Обновить", "callback_data": "today_refresh"}],
-        [{"text": "⬅️ В меню", "callback_data": "back_menu"}],
-    ]
-    return {"inline_keyboard": common + task_buttons}
-
-
-def task_inline_keyboard(task_id):
-    return {
-        "inline_keyboard": [
-            [
-                {"text": "✅ Готово", "callback_data": f"task_done:{task_id}"},
-                {"text": "✏️ Редактировать", "callback_data": f"task_edit:{task_id}"},
-            ],
-            [
-                {"text": "🗑 Удалить", "callback_data": f"task_delete:{task_id}"},
-                {"text": "➡️ В Сегодня", "callback_data": f"task_today:{task_id}"},
-            ],
-            [
-                {"text": "🔁 В рутину", "callback_data": f"task_to_routine:{task_id}"},
-                {"text": "⬅️ В инбокс", "callback_data": "back_inbox"},
-            ],
-        ]
-    }
-
-
-def simple_list_keyboard(prefix, items):
-    """
-    Универсальная клавиатура для сущностей:
-    prefix: 'routine', 'template', 'project', 'sos', 'habit'
-    """
-    rows = []
-    for it in items:
-        text = f"{it.get('id', '')}. {it.get('name', 'Без названия')}"
-        rows.append([{
-            "text": text,
-            "callback_data": f"{prefix}_open:{it['id']}"
-        }])
-    rows.append([{"text": "⬅️ В меню", "callback_data": "back_menu"}])
-    return {"inline_keyboard": rows}
-
-def inbox_commands_keyboard():
-    """
-    Панель смайликов-команд для работы со списком инбокса.
-    Выводится вместе со списком задач.
-    """
-    return {
-        "keyboard": [
-            # ряд 1 — основные массовые действия
-            [
-                {"text": "➕"},   # добавить новые задачи текстом
-                {"text": "✅"},   # отметить несколько задач как выполненные
-                {"text": "❌"},   # удалить несколько задач
-            ],
-            # ряд 2 — переносы
-            [
-                {"text": "📌"},   # перенести несколько задач в «Сегодня»
-                {"text": "🔁"},   # собрать из задач рутину
-            ],
-            # ряд 3 — выход
-            [
-                {"text": "⬅️"},   # вернуться в главное меню
-            ],
-        ],
-        "resize_keyboard": True,
-        "one_time_keyboard": False,
-    }
+    return {"inline_keyboard": []}
