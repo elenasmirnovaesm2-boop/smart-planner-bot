@@ -24,6 +24,10 @@ from bot.inbox import (
     handle_add_inbox_text,
     handle_edit_task_text,
     handle_done_comment,
+    bulk_complete_tasks,
+    bulk_delete_tasks,
+    bulk_move_to_today,
+    bulk_prepare_routine,
 )
 
 from bot.today import send_today, refresh_today
@@ -64,7 +68,7 @@ def handle_text_message(message):
     text = (message.get("text") or "").strip()
     pending = get_pending_action() or {}
 
-    # отложенное действие
+    # ---------- отложенное действие ----------
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -82,7 +86,46 @@ def handle_text_message(message):
             handle_done_comment(chat_id, text, task_id)
             return
 
-    # команды / кнопки
+    # ---------- мульти-команды по эмодзи в инбоксе ----------
+    # 🧹 1 2 5-7  -> отметить несколько задач как выполненные
+    # 🗑 1 3      -> удалить
+    # ☀️ 2 4-6    -> в «Сегодня»
+    # 🔁 1 2 3    -> подготовка к созданию рутины (пока только черновик)
+
+    if text.startswith("🧹"):
+        numbers = text.lstrip("🧹").strip()
+        bulk_complete_tasks(chat_id, numbers)
+        send_inbox(chat_id)
+        return
+
+    if text.startswith("🗑"):
+        numbers = text.lstrip("🗑").strip()
+        bulk_delete_tasks(chat_id, numbers)
+        send_inbox(chat_id)
+        return
+
+    if text.startswith("☀️") or text.startswith("🌞"):
+        numbers = text.lstrip("☀️🌞").strip()
+        bulk_move_to_today(chat_id, numbers)
+        send_inbox(chat_id)
+        return
+
+    if text.startswith("🔁"):
+        numbers = text.lstrip("🔁").strip()
+        ids = bulk_prepare_routine(chat_id, numbers)
+        # Пока только отмечаем, что эти задачи будут заготовкой для рутины
+        if ids:
+            sorted_ids = sorted(ids)
+            send_message(
+                chat_id,
+                "Подготовила задачи для будущей рутины:\n"
+                f"№№: {', '.join(str(i) for i in sorted_ids)}\n\n"
+                "Позже добавим полноценное создание и редактирование рутин."
+            )
+        return
+
+    # ---------- команды / кнопки ----------
+
     if text == "/start":
         send_message(
             chat_id,
