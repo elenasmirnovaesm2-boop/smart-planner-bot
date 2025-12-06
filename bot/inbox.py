@@ -45,9 +45,18 @@ def parse_task_ids(text: str):
 def render_inbox_text():
     tasks = list_active_tasks()
     if not tasks:
-        return "Инбокс пуст.\n\nНажми «➕ Добавить», чтобы создать задачи.", tasks
+        return (
+            "📥 INBOX\n\n"
+            "Инбокс пуст.\n\n"
+            "Нажми «➕ Добавить», чтобы создать задачи.",
+            tasks,
+        )
 
-    lines = ["Твой инбокс:"]
+    lines = [
+        "📥 INBOX",
+        "",
+        "Твой инбокс:",
+    ]
     for t in tasks:
         lines.append(f"{t['id']}. [ ] {t['text']}")
     return "\n".join(lines), tasks
@@ -81,7 +90,8 @@ def render_task_card(task):
 
 
 def handle_add_inbox_text(chat_id, text):
-    # разбираем текст как список задач
+    from bot.telegram_api import send_message  # чтобы избежать циклических импортов
+
     lines = [line.strip() for line in text.split("\n")]
     lines = [ln for ln in lines if ln]
 
@@ -106,6 +116,8 @@ def handle_add_inbox_text(chat_id, text):
 
 
 def handle_edit_task_text(chat_id, text, task_id):
+    from bot.telegram_api import send_message
+
     ok, task = update_task_text(task_id, text)
     if not ok:
         send_message(chat_id, "Не нашла эту задачу.")
@@ -117,7 +129,8 @@ def handle_edit_task_text(chat_id, text, task_id):
 
 
 def handle_done_comment(chat_id, text, task_id):
-    from storage import save_tasks, load_tasks  # локальный импорт, чтобы не тянуть лишнее наверх
+    from storage import save_tasks, load_tasks
+    from bot.telegram_api import send_message
 
     tasks = load_tasks()
     for t in tasks:
@@ -130,77 +143,83 @@ def handle_done_comment(chat_id, text, task_id):
     send_message(chat_id, "Не нашла задачу.")
 
 
-# ---------- МАССОВЫЕ ОПЕРАЦИИ С ЗАДАЧАМИ ----------
+def handle_inbox_reply(chat_id, text):
+    """
+    Обработка ответов на сообщение с инбоксом:
+    ✅ 1 2 5-7  -> отметить выполненными
+    ❌ 1 3      -> удалить
+    📆 2 4      -> в «Сегодня»
+    ➕ новая задача -> добавить задачу(и)
+    Также можно вместо номеров писать кусок текста: ✅ посуда
+    """
+    from bot.telegram_api import send_message
 
-def bulk_complete_tasks(chat_id, text):
-    """
-    Отмечает несколько задач как выполненные по номерам.
-    """
-    ids = parse_task_ids(text)
-    if not ids:
-        send_message(chat_id, "Не нашла номеров задач. Напиши, например: 1 2 5-7")
+    text = (text or "").strip()
+    if not text:
+        send_message(chat_id, "Напиши команду и номера задач или текст.")
         return
 
-    done = 0
-    for tid in ids:
-        ok, _ = complete_task_by_id(tid)
-        if ok:
-            done += 1
+    cmd = text[0]
+    rest = text[1:].strip()
 
-    if done == 0:
-        send_message(chat_id, "Не удалось найти ни одной задачи по этим номерам.")
-    else:
-        send_message(chat_id, f"Отметила как выполненные: {done} задач(и).")
+    tasks = list_active_tasks()
 
+    # 1. пробуем вытащить номера
+    ids = parse_task_ids(rest)
 
-def bulk_delete_tasks(chat_id, text):
-    """
-    Удаляет несколько задач по номерам.
-    """
-    ids = parse_task_ids(text)
-    if not ids:
-        send_message(chat_id, "Не нашла номеров задач. Напиши, например: 3 4 10-12")
+    # 2. если номеров нет, но есть текст — ищем по подстроке
+    if not ids and rest:
+        query = rest.lower()
+        for t in tasks:
+            if query in t["text"].lower():
+                ids.add(t["id"])
+
+    if cmd in ("➕", "+"):
+        # добавление новых задач: весь rest — текст (можно с переносами строк)
+        if not rest:
+            send_message(chat_id, "После ➕ напиши текст задачи.")
+            return
+        handle_add_inbox_text(chat_id, rest)
         return
 
-    deleted = 0
-    for tid in ids:
-        if delete_task_by_id(tid):
-            deleted += 1
-
-    if deleted == 0:
-        send_message(chat_id, "Ничего не удалила. Проверь номера задач.")
-    else:
-        send_message(chat_id, f"Удалено задач: {deleted}.")
-
-
-def bulk_move_to_today(chat_id, text):
-    """
-    Переносит несколько задач в «Сегодня» по номерам.
-    """
-    ids = parse_task_ids(text)
     if not ids:
-        send_message(chat_id, "Не нашла номеров задач. Напиши, например: 1 2 5-7")
+        send_message(chat_id, "Не нашла задачи по этим номерам или тексту.")
         return
 
-    added = 0
-    for tid in ids:
-        item = add_today_from_task(tid)
-        if item:
-            added += 1
+    if cmd in ("❌", "🗑"):
+        count = 0
+        for tid in ids:
+            if delete_task_by_id(tid):
+                count += 1
+        send_message(chat_id, f"Удалено задач: {count}.")
+        send_inbox(chat_id)
+        return
 
-    if added == 0:
-        send_message(chat_id, "Не удалось добавить ни одной задачи в «Сегодня».")
-    else:
-        send_message(chat_id, f"Добавила в «Сегодня» задач: {added}.")
+    if cmd in ("✅", "✔"):
+        count = 0
+        for tid in ids:
+            ok, _ = complete_task_by_id(tid)
+            if ok:
+                count += 1
+        send_message(chat_id, f"Отметила выполненными: {count}.")
+        send_inbox(chat_id)
+        return
 
+    if cmd in ("📆", "🗓"):
+        count = 0
+        for tid in ids:
+            item = add_today_from_task(tid)
+            if item:
+                count += 1
+        send_message(chat_id, f"Добавила в «Сегодня»: {count}.")
+        return
 
-def bulk_prepare_routine(chat_id, text):
-    """
-    Первый шаг создания рутины из задач.
-    Здесь только парсим номера и возвращаем набор id.
-    Проверка и создание рутины делаются в main.py.
-    """
-    ids = parse_task_ids(text)
-    if not ids:
-        send_message(chat_id, "Не нашла номеров задач. Попробуй ещё раз: 1 2 5-7")
-    return ids
+    send_message(
+        chat_id,
+        "Не поняла команду.\n"
+        "Примеры:\n"
+        "✅ 1 2 4-5 — отметить выполненными\n"
+        "❌ 3 — удалить\n"
+        "📆 1 2 — добавить в «Сегодня»\n"
+        "✅ посуда — найти по тексту и отметить выполненной",
+    )
