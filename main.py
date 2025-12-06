@@ -24,7 +24,7 @@ from bot.inbox import (
     handle_add_inbox_text,
     handle_edit_task_text,
     handle_done_comment,
-    handle_merge_command,   # ← добавили
+    parse_task_ids,      # <── добавили
 )
 
 from bot.today import send_today, refresh_today
@@ -58,14 +58,153 @@ if not TOKEN:
 app = Flask(__name__)
 
 
+# ---------- ВСПОМОГАТЕЛЬНОЕ ----------
+
+def get_reply_context(message):
+    """
+    Определяем контекст по сообщению, на которое идёт reply.
+    Сейчас используем только:
+    - 'inbox'  — если это список инбокса
+    - 'today'  — если это список «Сегодня»
+    Остальное можно будет добавить дальше (рутины, проекты и т.п.).
+    """
+    reply = message.get("reply_to_message")
+    if not reply:
+        return None
+
+    from_user = reply.get("from") or {}
+    if not from_user.get("is_bot"):
+        return None
+
+    text = (reply.get("text") or "").strip()
+
+    if text.startswith("Твой инбокс:") or text.startswith("Инбокс пуст"):
+        return "inbox"
+
+    if text.startswith("Задачи на сегодня:") or "На сегодня пока ничего нет" in text:
+        return "today"
+
+    return None
+
+
+def handle_inbox_command(chat_id, text):
+    """
+    Обработка команд в контексте ИНБОКСА при reply на список.
+    Поддерживаются:
+      add Текст
+      edit ID Новый текст
+      del 1 2 5-7
+      mv ID... today
+      open ID
+    """
+    raw = text.strip()
+    if not raw:
+        return False  # ничего не делали
+
+    tokens = raw.split()
+    cmd = tokens[0].lower()
+
+    # --- ADD ---
+    if cmd in ("add", "a"):
+        new_text = raw[len(tokens[0]):].strip()
+        if not new_text:
+            send_message(chat_id, "После команды add нужно указать текст задачи.")
+            return True
+        handle_add_inbox_text(chat_id, new_text)
+        return True
+
+    # --- EDIT ---
+    if cmd in ("edit", "e"):
+        if len(tokens) < 3:
+            send_message(chat_id, "Формат: edit <номер> <новый текст>")
+            return True
+        try:
+            task_id = int(tokens[1])
+        except ValueError:
+            send_message(chat_id, "Номер задачи должен быть числом.")
+            return True
+        # восстановим текст после второго токена
+        new_text = raw.split(None, 2)[2]
+        handle_edit_task_text(chat_id, new_text, task_id)
+        return True
+
+    # --- DEL ---
+    if cmd in ("del", "d"):
+        if len(tokens) < 2:
+            send_message(chat_id, "Формат: del <номера>, например: del 1 2 5-7")
+            return True
+        id_text = raw[len(tokens[0]):].strip()
+        ids = parse_task_ids(id_text)
+        if not ids:
+            send_message(chat_id, "Не поняла номера задач. Пример: del 1 2 5-7")
+            return True
+        deleted = 0
+        for tid in ids:
+            if delete_task_by_id(tid):
+                deleted += 1
+        send_message(chat_id, f"Удалено задач: {deleted}.")
+        send_inbox(chat_id)
+        return True
+
+    # --- MV ... today ---
+    if cmd in ("mv", "move"):
+        if len(tokens) < 3:
+            send_message(chat_id, "Формат: mv <номера> today")
+            return True
+        target = tokens[-1].lower()
+        if target != "today":
+            send_message(chat_id, "Сейчас поддерживаю только mv ... today.")
+            return True
+        id_text = " ".join(tokens[1:-1])
+        ids = parse_task_ids(id_text)
+        if not ids:
+            send_message(chat_id, "Не поняла номера задач для перемещения.")
+            return True
+        moved = 0
+        for tid in ids:
+            if add_today_from_task(tid):
+                moved += 1
+        send_message(chat_id, f"Перенесла в «Сегодня»: {moved} задач.")
+        return True
+
+    # --- OPEN ---
+    if cmd == "open":
+        if len(tokens) < 2:
+            send_message(chat_id, "Формат: open <номер>")
+            return True
+        try:
+            tid = int(tokens[1])
+        except ValueError:
+            send_message(chat_id, "Номер задачи должен быть числом.")
+            return True
+        task = get_task_by_id(tid)
+        if not task:
+            send_message(chat_id, f"Не нашла задачу #{tid}.")
+            return True
+        card = render_task_card(task)
+        kb = task_inline_keyboard(tid)
+        send_message(chat_id, card, reply_markup=kb)
+        return True
+
+    # если команда не распознана — вернём False,
+    # чтобы можно было обработать текст как обычные задачи
+    return False
+
+
 # ---------- MESSAGE ----------
 
 def handle_text_message(message):
     chat_id = message["chat"]["id"]
     text = (message.get("text") or "").strip()
     pending = get_pending_action() or {}
+    context = get_reply_context(message)
 
-    # отложенное действие
+    # 1) если отвечаем на список ИНБОКСА — пробуем интерпретировать как команду
+    if context == "inbox" and not pending:
+        if handle_inbox_command(chat_id, text):
+            return  # команда обработана
+
+    # 2) отложенное действие (редактирование, комментарий и т.п.)
     if pending:
         ptype = pending.get("type")
         if ptype == "add_inbox":
@@ -83,13 +222,7 @@ def handle_text_message(message):
             handle_done_comment(chat_id, text, task_id)
             return
 
-    # --- КОМАНДА MERGE ДЛЯ ИНБОКСА ---
-    low = text.lower()
-    if low.startswith("merge "):
-        handle_merge_command(chat_id, text)
-        return
-
-    # команды / кнопки
+    # 3) команды / кнопки
     if text == "/start":
         send_message(
             chat_id,
@@ -171,7 +304,7 @@ def handle_text_message(message):
         send_message(chat_id, "Не знаю такую команду. Нажми кнопки внизу.")
         return
 
-    # по умолчанию — считаем текст списком задач для инбокса
+    # 4) по умолчанию — считаем текст списком задач для инбокса
     handle_add_inbox_text(chat_id, text)
 
 
