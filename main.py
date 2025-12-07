@@ -1,616 +1,543 @@
-"""
-Entry point for the Smart Planner bot.
+import telebot
+from storage import tasks_by_user, save_data, load_data
+# import keyboards  # (клавиатура меню удалена, более не используется)
 
-This module defines a Flask application that serves as the webhook
-endpoint for a Telegram bot. Incoming updates are parsed and routed to
-appropriate handlers for commands, inbox operations, and entity listings.
+TOKEN = "YOUR_BOT_TOKEN_HERE"
+bot = telebot.TeleBot(TOKEN)
 
-The bot relies on modules in the `bot` package as well as the `storage`
-module to provide persistence. To run this bot locally, you must set the
-`TELEGRAM_BOT_TOKEN` environment variable and expose the Flask
-application via a public URL (e.g. using ngrok) so Telegram can deliver
-webhook updates. Refer to Telegram's Bot API documentation for details
-on configuring webhooks.
-"""
+# Глобальные структуры для контекста и истории действий (для undo)
+context_map = {}  # {(chat_id, message_id): (section, parent_index)}
+undo_stack = {}   # {chat_id: [actions...]}
 
-from __future__ import annotations
+# Список допустимых разделов для /open и назначения перемещения
+SECTIONS = {"inbox", "today", "routines", "templates", "projects", "habits", "sos"}
 
-import os
-from typing import Any, Dict, List
+def get_user_data(chat_id):
+    """Получить (или инициализировать) хранилище задач для пользователя."""
+    if chat_id not in tasks_by_user:
+        tasks_by_user[chat_id] = load_data(chat_id)  # загрузить из файла или создать новые
+        if tasks_by_user[chat_id] is None:
+            # Инициализация с шаблонами по умолчанию, если нет сохраненных данных
+            tasks_by_user[chat_id] = {
+                "inbox": [],
+                "today": [],
+                "routines": [ {"title": "Пример утренней рутины", "children": [
+                                    {"title": "Проснуться", "children": []},
+                                    {"title": "Сделать зарядку", "children": []},
+                                    {"title": "Позавтракать", "children": []}
+                               ]} ],
+                "templates": [ {"title": "Пример плана дня", "children": [
+                                    {"title": "Утренние задачи", "children": []},
+                                    {"title": "Дневные задачи", "children": []},
+                                    {"title": "Вечерние задачи", "children": []}
+                               ]},
+                               {"title": "Шаблон SOS", "children": [
+                                    {"title": "Пауза и глубокий вдох", "children": []},
+                                    {"title": "Определить приоритетную задачу", "children": []},
+                                    {"title": "Начать с малого шага", "children": []}
+                               ]} ],
+                "projects": [],
+                "habits": [],
+                "sos": []
+            }
+    return tasks_by_user[chat_id]
 
-from flask import Flask, request
+def save_user_data(chat_id):
+    """Сохранить данные пользователя."""
+    if chat_id in tasks_by_user:
+        save_data(chat_id, tasks_by_user[chat_id])
 
-from bot.telegram_api import send_message
-from bot.keyboards import main_keyboard
-from bot.inbox import (
-    send_inbox,
-    handle_add_inbox_text,
-    handle_edit_task_text,
-    handle_delete_tasks,
-    handle_move_task,
-    handle_open_task,
-)
-from storage import (
-    list_today,
-    list_routines,
-    list_templates,
-    list_projects,
-    list_sos,
-    list_habits,
-    # CRUD functions for routines
-    add_routine,
-    update_routine,
-    delete_routine,
-    get_routine_by_id,
-    # CRUD functions for templates
-    add_template,
-    update_template,
-    delete_template,
-    get_template_by_id,
-    # CRUD functions for projects
-    add_project,
-    update_project,
-    delete_project,
-    get_project_by_id,
-    # CRUD functions for habits
-    add_habit,
-    update_habit,
-    delete_habit,
-    get_habit_by_id,
-    # CRUD functions for SOS
-    add_sos,
-    update_sos,
-    delete_sos,
-    get_sos_by_id,
-)
-from bot.entities import (
-    render_routine_card,
-    render_template_card,
-    render_project_card,
-    render_sos_card,
-    render_habit_card,
-)
-
-app = Flask(__name__)
-
-
-def render_today_list() -> str:
-    """Return a textual representation of the 'today' list."""
-    items = list_today()
-    if not items:
-        return "Сегодня пока пусто. Переноси задачи из инбокса командой mv <id> today."
-    lines: List[str] = ["Твой список 'Сегодня':"]
-    for item in items:
-        tid = item.get("task_id")
-        text = item.get("text", "")
-        lines.append(f"{item['id']}. {text} (id задачи {tid})")
+def format_list(section, item_list):
+    """Вернуть текстовое представление списка задач для раздела или подзадач."""
+    if not item_list:
+        return "Нет задач."
+    lines = []
+    for idx, item in enumerate(item_list, start=1):
+        line = f"{idx}. {item['title']}"
+        if item['children']:
+            # Отметим наличие подзадач (количество)
+            line += f" ({len(item['children'])} подзадач)"
+        lines.append(line)
     return "\n".join(lines)
 
+def send_section(chat_id, section, parent_index=None):
+    """Отправить сообщение со списком задач раздела или вложенных задач элемента."""
+    user_data = get_user_data(chat_id)
+    if parent_index is None:
+        # верхний уровень раздела
+        header = section.capitalize() if section.lower() != "sos" else "SOS"
+        header += ":"
+        item_list = user_data.get(section, [])
+        text = header + "\n" + (format_list(section, item_list) if item_list else "Нет задач.")
+    else:
+        # вложенные задачи элемента (например, задачи проекта или шаблона)
+        parent_list = user_data.get(section, [])
+        if parent_index < 0 or parent_index >= len(parent_list):
+            bot.send_message(chat_id, "Элемент не найден.")
+            return None
+        parent_item = parent_list[parent_index]
+        # Заголовок: название элемента (проекта/шаблона/рутины)
+        title = parent_item["title"]
+        # Добавим тип в заголовок для ясности (например, "Проект: ...")
+        if section == "projects":
+            header = f"Проект: {title}:"
+        elif section == "templates":
+            header = f"Шаблон: {title}:"
+        elif section == "routines":
+            header = f"Рутина: {title}:"
+        else:
+            header = title + ":"
+        item_list = parent_item["children"]
+        text = header + "\n" + (format_list(section, item_list) if item_list else "Нет задач.")
+    # Отправляем сообщение со списком
+    sent = bot.send_message(chat_id, text)
+    # Сохраняем контекст для возможности ответов на это сообщение
+    context_map[(chat_id, sent.message_id)] = (section, parent_index)
+    return sent
 
-def handle_list_entities(chat_id: int, entities: List[Dict[str, Any]], renderer) -> None:
-    """
-    Send one or more entity cards to the user. Each entity is rendered
-    via the provided ``renderer`` function. If the list is empty,
-    inform the user that the corresponding list is empty.
-    """
-    if not entities:
-        send_message(chat_id, "Пока ничего нет в этом разделе.")
-        return
-    for ent in entities:
-        send_message(chat_id, renderer(ent))
+def push_undo(chat_id, action):
+    """Добавить действие в стек для undo (ограничение 5 записей)."""
+    if chat_id not in undo_stack:
+        undo_stack[chat_id] = []
+    undo_stack[chat_id].append(action)
+    # Ограничим размер стека последних действий
+    if len(undo_stack[chat_id]) > 5:
+        undo_stack[chat_id].pop(0)
 
+@bot.message_handler(commands=['start'])
+def start_handler(message):
+    chat_id = message.chat.id
+    # Инициализируем данные пользователя
+    get_user_data(chat_id)
+    # Приветственное сообщение
+    bot.send_message(chat_id, 
+        "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
+        "Для справки по командам введите /help")
+    # Сохраняем данные (например, создаем файл пользователя)
+    save_user_data(chat_id)
 
-def handle_text_message(message: Dict[str, Any]) -> None:
-    """
-    Primary dispatcher for incoming text messages. This function parses
-    user commands and routes them to the appropriate inbox or listing
-    handlers. If no known command is found, the text is treated as
-    one or more tasks to add to the inbox.
-    """
-    chat_id = message["chat"]["id"]
-    text = (message.get("text") or "").strip()
-    if not text:
-        return
+@bot.message_handler(commands=['help'])
+def help_handler(message):
+    chat_id = message.chat.id
+    help_text = (
+        "**Доступные команды:**\n"
+        "- `/open <раздел>` – открыть список задач раздела (например, `/open inbox`, `/open today`). "
+        "Доступные разделы: inbox (входящие), today (сегодня), routines (рутины), templates (шаблоны), "
+        "projects (проекты), habits (привычки), sos (SOS).\n"
+        "- `/open <номер>` – открыть вложенные элементы задачи или проекта. Эту команду нужно отправлять ответом на сообщение со списком, содержащим нумерованные элементы. Например, ответив на список проектов командой `/open 2`, вы откроете задачи проекта №2.\n"
+        "- `/add <текст>` – добавить новую задачу в текущий раздел. Команду следует отправлять ответом на сообщение списка раздела. Если отправить `/add` без ответа (просто сообщением), задача добавится в **Inbox**.\n"
+        "- `/edit <N> <новый текст>` – изменить текст задачи под номером N в текущем списке (где N – число из списка задач, на сообщение которого вы отвечаете).\n"
+        "- `/mv <N или N-M> to <раздел>` – переместить задачу(и) в другой раздел. Укажите номер или диапазон номеров через дефис. Например, `/mv 2-4 to today` переместит задачи с 2 по 4 в раздел **Today**. Команду нужно отправлять ответом на сообщение со списком (откуда переносим).\n"
+        "- `/del <N или N-M>` – удалить задачу(и) из текущего списка. Можно указать один номер либо диапазон через дефис (например, `3-5`). Команда отправляется ответом на сообщение со списком. Удаленные задачи можно восстановить командой `/undo`.\n"
+        "- `/undo` – отменить последнее действие (доступно до 5 последних изменений). Отменяет добавление, редактирование, перемещение или удаление задачи."
+    )
+    bot.send_message(chat_id, help_text, parse_mode="Markdown")
 
-    # Стандартные команды: старт, меню и справка.
-    if text == "/start":
-        send_message(
-            chat_id,
-            "Привет! Это твой планировщик.\n"
-            "Используй кнопки ниже для работы с инбоксом, сегодня, рутинами и другими разделами.",
-            reply_markup=main_keyboard(),
-        )
+@bot.message_handler(commands=['open'])
+def open_handler(message):
+    chat_id = message.chat.id
+    user_data = get_user_data(chat_id)
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        bot.send_message(chat_id, "Укажите, что открыть: раздел (inbox/today/...) или номер элемента.")
         return
-    if text in ("/menu", "🔆 Меню"):
-        send_message(
-            chat_id,
-            "Главное меню.\n\nНажми «ℹ️ Команды» чтобы посмотреть список текстовых команд.",
-            reply_markup=main_keyboard(),
-        )
-        return
-    if text in ("/commands", "ℹ️ Команды"):
-        send_message(
-            chat_id,
-            "Список команд:\n"
-            "• add <текст> — добавить задачу в инбокс. Несколько задач можно разделять переводом строки.\n"
-            "• edit <ID> <новый текст> — изменить текст задачи.\n"
-            "• del <ID или диапазон> — удалить одну или несколько задач (пример: del 1 3-5).\n"
-            "• mv <ID> today — перенести задачу в список «Сегодня».\n"
-            "• open <ID> — открыть подробный вид задачи.\n"
-            "\n"
-            "Команды для рутин: radd <название>|<шаг1;шаг2;...>, redit <ID> <название>|<шаг1;...>, "
-            "rdel <ID>, ropen <ID>\n"
-            "Команды для шаблонов: tadd <название>|<блок1;блок2;...>, tedit <ID> <название>|<блоки>, "
-            "tdel <ID>, topen <ID>\n"
-            "Команды для проектов: padd <название>|<шаг1;шаг2;...>, pedit <ID> <название>|<шаги>, "
-            "pdel <ID>, popen <ID>\n"
-            "Команды для привычек: hadd <название>|<график>, hedit <ID> <название>|<график>, hdel <ID>, hopen <ID>\n"
-            "Команды для SOS: sadd <название>|<шаг1;шаг2;...>, sedit <ID> <название>|<шаги>, "
-            "sdel <ID>, sopen <ID>\n"
-            "\n"
-            "Примеры: 'radd Утренняя рутина|проснуться;завтрак' или 'tedit 2 Новый день|работа;отдых'",
-        )
-        return
+    query = args[1].strip()
+    # Если аргумент - число, пытаемся открыть вложенный список по номеру
+    if query.isdigit():
+        # Должно быть ответом на сообщение списка
+        if not message.reply_to_message:
+            bot.send_message(chat_id, "Для открытия элемента отправьте команду в ответ на сообщение со списком.")
+            return
+        # Получаем контекст из ответного сообщения
+        ctx = context_map.get((chat_id, message.reply_to_message.message_id))
+        if not ctx:
+            bot.send_message(chat_id, "Контекст списка не найден.")
+            return
+        section, parent_index = ctx
+        index = int(query) - 1  # перевод в 0-индекс
+        # Открываем вложенные задачи (второй уровень)
+        if parent_index is None:
+            # Открываем элемент верхнего уровня раздела
+            send_section(chat_id, section, parent_index=index)
+        else:
+            # Возможно, поддержка более глубокого уровня (не предполагается, но на всякий случай)
+            send_section(chat_id, section, parent_index=parent_index)  # без изменений, т.к. глубже одного уровня не реализовано
+    else:
+        # Аргумент не число: вероятно, название раздела
+        sec = query.lower()
+        if sec in SECTIONS:
+            send_section(chat_id, sec, parent_index=None)
+        else:
+            bot.send_message(chat_id, f"Раздел *{query}* не найден. Используйте один из: " 
+                                      "inbox, today, routines, templates, projects, habits, sos.", parse_mode="Markdown")
 
-    # Переходы между разделами по кнопкам/командам.
-    if text in ("/inbox", "📝 Инбокс"):
-        send_inbox(chat_id)
+@bot.message_handler(commands=['add'])
+def add_handler(message):
+    chat_id = message.chat.id
+    user_data = get_user_data(chat_id)
+    # Извлекаем текст задачи
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        bot.send_message(chat_id, "После команды /add укажите текст задачи.")
         return
-    if text in ("/today", "📅 Сегодня"):
-        send_message(chat_id, render_today_list())
-        return
-    if text in ("/routines", "📋 Рутины"):
-        handle_list_entities(chat_id, list_routines(), render_routine_card)
-        return
-    if text in ("/templates", "📅 Шаблоны"):
-        handle_list_entities(chat_id, list_templates(), render_template_card)
-        return
-    if text in ("/projects", "📦 Проекты"):
-        handle_list_entities(chat_id, list_projects(), render_project_card)
-        return
-    if text in ("/sos", "🆘 SOS"):
-        handle_list_entities(chat_id, list_sos(), render_sos_card)
-        return
-    if text in ("/habits", "🔥 Привычки"):
-        handle_list_entities(chat_id, list_habits(), render_habit_card)
-        return
+    task_text = parts[1].strip()
+    # Определяем целевой список (раздел)
+    if message.reply_to_message:
+        ctx = context_map.get((chat_id, message.reply_to_message.message_id))
+        if not ctx:
+            # Если вдруг нет контекста
+            bot.send_message(chat_id, "Не удалось определить раздел для добавления задачи.")
+            return
+        section, parent_index = ctx
+    else:
+        # Если команда без ответа – добавляем в Inbox
+        section, parent_index = "inbox", None
+    # Создаем новую задачу (элемент)
+    new_item = {"title": task_text, "children": []}
+    if parent_index is None:
+        # Добавляем на верхний уровень выбранного раздела
+        user_data[section].append(new_item)
+    else:
+        # Добавляем как подзадачу к выбранному элементу (проекту/шаблону/рутине)
+        parent_list = user_data[section]
+        if parent_index < 0 or parent_index >= len(parent_list):
+            bot.send_message(chat_id, "Не найден элемент для добавления подзадачи.")
+            return
+        parent_item = parent_list[parent_index]
+        parent_item["children"].append(new_item)
+    # Сохраняем действие для undo
+    undo_action = {
+        "type": "add",
+        "section": section,
+        "parent": parent_index,
+        "item": new_item
+    }
+    push_undo(chat_id, undo_action)
+    save_user_data(chat_id)
+    # Отправляем подтверждение/обновленный список
+    if message.reply_to_message:
+        # Обновляем текущий список раздела
+        send_section(chat_id, section, parent_index=parent_index)
+    else:
+        bot.send_message(chat_id, f"Задача добавлена в раздел *{section.capitalize()}*.", parse_mode="Markdown")
 
-    # Команды для задач (инбокса).
-    lower = text.lower()
-    if lower.startswith("add ") or lower == "add":
-        handle_add_inbox_text(chat_id, text[3:].strip())
+@bot.message_handler(commands=['edit'])
+def edit_handler(message):
+    chat_id = message.chat.id
+    user_data = get_user_data(chat_id)
+    if not message.reply_to_message:
+        bot.send_message(chat_id, "Команду /edit нужно отправлять ответом на сообщение со списком задач.")
         return
-    if lower.startswith("edit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: edit <ID> <новый текст>")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер задачи в команде edit.")
-            return
-        handle_edit_task_text(chat_id, parts[2].strip(), tid)
+    ctx = context_map.get((chat_id, message.reply_to_message.message_id))
+    if not ctx:
+        bot.send_message(chat_id, "Контекст списка не найден.")
         return
-    if lower.startswith("del "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: del <ID или диапазон>")
-            return
-        handle_delete_tasks(chat_id, parts[1])
+    section, parent_index = ctx
+    # Парсим команду: ожидается "/edit N новый текст"
+    args = message.text.split(maxsplit=2)
+    if len(args) < 3:
+        bot.send_message(chat_id, "Используйте формат: /edit <номер> <новый текст задачи> (команду отправлять ответом на список).")
         return
-    if lower.startswith("mv "):
-        parts = text.split()
-        if len(parts) != 3 or parts[2].lower() != "today":
-            send_message(chat_id, "Формат: mv <ID> today")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер задачи в команде mv.")
-            return
-        handle_move_task(chat_id, tid)
+    try:
+        idx = int(args[1]) - 1
+    except ValueError:
+        bot.send_message(chat_id, "Номер задачи должен быть числом.")
         return
-    if lower.startswith("open "):
-        parts = text.split()
-        if len(parts) != 2:
-            send_message(chat_id, "Формат: open <ID>")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер задачи в команде open.")
-            return
-        handle_open_task(chat_id, tid)
+    new_text = args[2].strip()
+    if parent_index is None:
+        item_list = user_data.get(section, [])
+    else:
+        parent_item = user_data.get(section, [])[parent_index]
+        item_list = parent_item["children"]
+    if idx < 0 or idx >= len(item_list):
+        bot.send_message(chat_id, "Задача с таким номером не найдена.")
         return
+    item = item_list[idx]
+    old_text = item["title"]
+    item["title"] = new_text
+    # Сохраняем действие для undo
+    undo_action = {
+        "type": "edit",
+        "section": section,
+        "parent": parent_index,
+        "item": item,
+        "old_text": old_text
+    }
+    push_undo(chat_id, undo_action)
+    save_user_data(chat_id)
+    # Отправляем обновленный список
+    send_section(chat_id, section, parent_index=parent_index)
 
-    # === Команды для рутин ===
-    if lower.startswith("radd"):
-        rest = text[4:].strip()
-        if not rest:
-            send_message(chat_id, "Формат: radd <название>|<шаг1;шаг2;...>")
-            return
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
-        else:
-            name = rest
-            steps = []
-        routine = add_routine(name, steps)
-        send_message(chat_id, f"Добавила рутину #{routine['id']}: {routine['name']}")
+@bot.message_handler(commands=['mv'])
+def mv_handler(message):
+    chat_id = message.chat.id
+    user_data = get_user_data(chat_id)
+    if not message.reply_to_message:
+        bot.send_message(chat_id, "Команду /mv нужно отправлять ответом на сообщение со списком задач, откуда переносить.")
         return
-    if lower.startswith("redit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: redit <ID> <название>|<шаги>")
-            return
-        try:
-            rid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер рутины.")
-            return
-        rest = parts[2]
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
-        else:
-            name = rest.strip()
-            steps = []
-        ok, updated = update_routine(rid, name, steps)
-        if not ok:
-            send_message(chat_id, "Не нашла такую рутину.")
-            return
-        send_message(chat_id, f"Обновила рутину #{rid}.")
-        send_message(chat_id, render_routine_card(updated))
+    ctx = context_map.get((chat_id, message.reply_to_message.message_id))
+    if not ctx:
+        bot.send_message(chat_id, "Контекст списка не найден.")
         return
-    if lower.startswith("rdel "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: rdel <ID>")
-            return
-        try:
-            rid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер рутины.")
-            return
-        if delete_routine(rid):
-            send_message(chat_id, f"Удалена рутина #{rid}.")
-        else:
-            send_message(chat_id, "Не нашла такую рутину.")
+    section, parent_index = ctx
+    # Парсим команду: ожидается "/mv 1-3 to section"
+    args = message.text.split()
+    if len(args) < 3:
+        bot.send_message(chat_id, "Используйте формат: /mv <N или N-M> to <раздел>.")
         return
-    if lower.startswith("ropen "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: ropen <ID>")
-            return
-        try:
-            rid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер рутины.")
-            return
-        routine = get_routine_by_id(rid)
-        if routine:
-            send_message(chat_id, render_routine_card(routine))
-        else:
-            send_message(chat_id, "Не нашла такую рутину.")
+    # Объединяем все аргументы кроме команды и 'to'
+    try:
+        to_index = args.index("to")
+    except ValueError:
+        to_index = args.index("to".capitalize()) if "to".capitalize() in args else -1
+    if to_index == -1:
+        bot.send_message(chat_id, "Укажите раздел назначения после 'to'.")
         return
+    selection_str = " ".join(args[1:to_index])
+    dest_section = args[to_index+1].lower() if to_index+1 < len(args) else ""
+    if dest_section not in SECTIONS:
+        bot.send_message(chat_id, f"Недопустимый раздел назначения: {dest_section}.")
+        return
+    # Получаем список исходных задач
+    if parent_index is None:
+        src_list = user_data.get(section, [])
+    else:
+        src_list = user_data.get(section, [])[parent_index]["children"]
+    # Разбираем диапазоны и номера
+    # Поддерживаем синтаксис: "N", "N-M", "N, M, K-L"
+    selection_str = selection_str.replace(",", " ")
+    parts = selection_str.split()
+    indices = []
+    for part in parts:
+        if "-" in part:
+            try:
+                a, b = part.split("-")
+                start = int(a)
+                end = int(b)
+            except:
+                bot.send_message(chat_id, f"Некорректный диапазон: {part}")
+                return
+            if start > end:
+                start, end = end, start
+            indices.extend(list(range(start, end+1)))
+        else:
+            try:
+                n = int(part)
+                indices.append(n)
+            except:
+                bot.send_message(chat_id, f"Некорректный номер задачи: {part}")
+                return
+    # Убираем дубликаты и сортируем
+    indices = sorted(set(indices))
+    if not indices:
+        bot.send_message(chat_id, "Не указаны корректные номера задач для перемещения.")
+        return
+    # Переводим в 0-based индексы и проверяем границы
+    indices0 = [i-1 for i in indices]
+    max_index = len(src_list) - 1
+    for i0 in indices0:
+        if i0 < 0 or i0 > max_index:
+            bot.send_message(chat_id, f"Задачи с номером {i0+1} не существует.")
+            return
+    # Сохраняем перемещаемые элементы и их исходные позиции
+    moved_items = [src_list[i] for i in indices0]
+    orig_positions = indices0[:]  # копия списка
+    # Удаляем элементы из исходного списка (с конца, чтобы индексы не сдвинулись до удаления)
+    for i in sorted(indices0, reverse=True):
+        src_list.pop(i)
+    # Добавляем элементы в целевой раздел (в конец списка целевого раздела)
+    # Если переносим подзадачи из проекта/шаблона, они станут обычными задачами в новом разделе
+    dest_list = user_data.get(dest_section)
+    if dest_list is None:
+        user_data[dest_section] = []
+        dest_list = user_data[dest_section]
+    for item in moved_items:
+        dest_list.append(item)
+    # Сохраняем действие для undo
+    undo_action = {
+        "type": "mv",
+        "section": section,
+        "parent": parent_index,
+        "dest_section": dest_section,
+        "dest_parent": None,  # (перенос всегда на верхний уровень другого раздела)
+        "items": moved_items,
+        "orig_positions": orig_positions
+    }
+    push_undo(chat_id, undo_action)
+    save_user_data(chat_id)
+    # Отправляем сообщение об успешном переносе и обновляем исходный список
+    bot.send_message(chat_id, f"Перенесено задач: {len(moved_items)} -> раздел *{dest_section.capitalize()}*.", parse_mode="Markdown")
+    send_section(chat_id, section, parent_index=parent_index)
 
-    # === Команды для шаблонов ===
-    if lower.startswith("tadd"):
-        rest = text[4:].strip()
-        if not rest:
-            send_message(chat_id, "Формат: tadd <название>|<блок1;блок2;...>")
-            return
-        if "|" in rest:
-            name_part, blocks_str = rest.split("|", 1)
-            name = name_part.strip()
-            blocks = [b.strip() for b in blocks_str.split(";") if b.strip()]
-        else:
-            name = rest
-            blocks = []
-        tpl = add_template(name, blocks)
-        send_message(chat_id, f"Добавила шаблон #{tpl['id']}: {tpl['name']}")
+@bot.message_handler(commands=['del'])
+def del_handler(message):
+    chat_id = message.chat.id
+    user_data = get_user_data(chat_id)
+    if not message.reply_to_message:
+        bot.send_message(chat_id, "Команду /del нужно отправлять ответом на сообщение со списком задач.")
         return
-    if lower.startswith("tedit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: tedit <ID> <название>|<блоки>")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер шаблона.")
-            return
-        rest = parts[2]
-        if "|" in rest:
-            name_part, blocks_str = rest.split("|", 1)
-            name = name_part.strip()
-            blocks = [b.strip() for b in blocks_str.split(";") if b.strip()]
-        else:
-            name = rest.strip()
-            blocks = []
-        ok, updated = update_template(tid, name, blocks)
-        if not ok:
-            send_message(chat_id, "Не нашла такой шаблон.")
-            return
-        send_message(chat_id, f"Обновила шаблон #{tid}.")
-        send_message(chat_id, render_template_card(updated))
+    ctx = context_map.get((chat_id, message.reply_to_message.message_id))
+    if not ctx:
+        bot.send_message(chat_id, "Контекст списка не найден.")
         return
-    if lower.startswith("tdel "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: tdel <ID>")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер шаблона.")
-            return
-        if delete_template(tid):
-            send_message(chat_id, f"Удалён шаблон #{tid}.")
-        else:
-            send_message(chat_id, "Не нашла такой шаблон.")
+    section, parent_index = ctx
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        bot.send_message(chat_id, "Укажите номер или диапазон задач для удаления.")
         return
-    if lower.startswith("topen "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: topen <ID>")
-            return
-        try:
-            tid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер шаблона.")
-            return
-        tpl = get_template_by_id(tid)
-        if tpl:
-            send_message(chat_id, render_template_card(tpl))
+    selection_str = args[1]
+    # Получаем целевой список
+    if parent_index is None:
+        target_list = user_data.get(section, [])
+    else:
+        target_list = user_data.get(section, [])[parent_index]["children"]
+    # Парсим диапазоны/номера (логика аналогично mv)
+    selection_str = selection_str.replace(",", " ")
+    parts = selection_str.split()
+    indices = []
+    for part in parts:
+        if "-" in part:
+            try:
+                a, b = part.split("-")
+                start = int(a)
+                end = int(b)
+            except:
+                bot.send_message(chat_id, f"Некорректный диапазон: {part}")
+                return
+            if start > end:
+                start, end = end, start
+            indices.extend(list(range(start, end+1)))
         else:
-            send_message(chat_id, "Не нашла такой шаблон.")
+            try:
+                n = int(part)
+                indices.append(n)
+            except:
+                bot.send_message(chat_id, f"Некорректный номер задачи: {part}")
+                return
+    indices = sorted(set(indices))
+    if not indices:
+        bot.send_message(chat_id, "Не указаны корректные номера задач.")
         return
+    indices0 = [i-1 for i in indices]
+    max_index = len(target_list) - 1
+    for i0 in indices0:
+        if i0 < 0 or i0 > max_index:
+            bot.send_message(chat_id, f"Задачи с номером {i0+1} не существует.")
+            return
+    # Сохраняем удаляемые задачи и их позиции
+    deleted_items = []
+    deleted_positions = []
+    for i in sorted(indices0, reverse=True):
+        deleted_items.insert(0, target_list.pop(i))  # вставляем в начало, чтобы итоговый порядок соответствовал исходному
+        deleted_positions.insert(0, i)
+    # Логика: deleted_items теперь в порядке возрастания оригинальных индексов
+    undo_action = {
+        "type": "del",
+        "section": section,
+        "parent": parent_index,
+        "items": deleted_items,
+        "positions": deleted_positions
+    }
+    push_undo(chat_id, undo_action)
+    save_user_data(chat_id)
+    bot.send_message(chat_id, f"Удалено задач: {len(deleted_items)}.")
+    # Обновляем список на экране
+    send_section(chat_id, section, parent_index=parent_index)
 
-    # === Команды для проектов ===
-    if lower.startswith("padd"):
-        rest = text[4:].strip()
-        if not rest:
-            send_message(chat_id, "Формат: padd <название>|<шаг1;шаг2;...>")
-            return
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
-        else:
-            name = rest
-            steps = []
-        proj = add_project(name, steps)
-        send_message(chat_id, f"Добавила проект #{proj['id']}: {proj['name']}")
+@bot.message_handler(commands=['undo'])
+def undo_handler(message):
+    chat_id = message.chat.id
+    if chat_id not in undo_stack or not undo_stack[chat_id]:
+        bot.send_message(chat_id, "Нет действий для отмены.")
         return
-    if lower.startswith("pedit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: pedit <ID> <название>|<шаги>")
-            return
-        try:
-            pid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер проекта.")
-            return
-        rest = parts[2]
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
+    user_data = get_user_data(chat_id)
+    action = undo_stack[chat_id].pop()  # получаем последнее действие
+    typ = action["type"]
+    if typ == "add":
+        sec = action["section"]
+        par = action["parent"]
+        item = action["item"]
+        # Найдем и удалим добавленный элемент из соответствующего списка
+        if par is None:
+            # верхний уровень
+            if item in user_data[sec]:
+                user_data[sec].remove(item)
         else:
-            name = rest.strip()
-            steps = []
-        ok, updated = update_project(pid, name, steps)
-        if not ok:
-            send_message(chat_id, "Не нашла такой проект.")
-            return
-        send_message(chat_id, f"Обновила проект #{pid}.")
-        send_message(chat_id, render_project_card(updated))
-        return
-    if lower.startswith("pdel "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: pdel <ID>")
-            return
-        try:
-            pid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер проекта.")
-            return
-        if delete_project(pid):
-            send_message(chat_id, f"Удалён проект #{pid}.")
+            parent_item = user_data.get(sec, [])[par]
+            if item in parent_item["children"]:
+                parent_item["children"].remove(item)
+        bot.send_message(chat_id, "Добавление задачи отменено.")
+        # Обновим список, если он открыт
+        send_section(chat_id, sec, parent_index=par)
+    elif typ == "edit":
+        sec = action["section"]
+        par = action["parent"]
+        item = action["item"]
+        old_text = action["old_text"]
+        # Вернем старый текст
+        item["title"] = old_text
+        bot.send_message(chat_id, "Изменение задачи отменено.")
+        # Обновим список, чтобы отобразить старый текст
+        send_section(chat_id, sec, parent_index=par)
+    elif typ == "mv":
+        sec = action["section"]
+        par = action["parent"]
+        dest_sec = action["dest_section"]
+        items = action["items"]
+        orig_positions = action["orig_positions"]
+        # Удаляем элементы из раздела-назначения
+        dest_list = user_data.get(dest_sec, [])
+        for it in items:
+            if it in dest_list:
+                dest_list.remove(it)
+        # Вставляем элементы обратно в исходный список на исходные позиции
+        target_list = user_data.get(sec, [])
+        if par is None:
+            # верхний уровень
+            for pos, it in sorted(zip(orig_positions, items), key=lambda x: x[0]):
+                if pos <= len(target_list):
+                    target_list.insert(pos, it)
+                else:
+                    # если позиция вне текущих границ (на случай), добавим в конец
+                    target_list.append(it)
         else:
-            send_message(chat_id, "Не нашла такой проект.")
-        return
-    if lower.startswith("popen "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: popen <ID>")
-            return
-        try:
-            pid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер проекта.")
-            return
-        proj = get_project_by_id(pid)
-        if proj:
-            send_message(chat_id, render_project_card(proj))
+            parent_item = target_list[par]
+            child_list = parent_item["children"]
+            for pos, it in sorted(zip(orig_positions, items), key=lambda x: x[0]):
+                if pos <= len(child_list):
+                    child_list.insert(pos, it)
+                else:
+                    child_list.append(it)
+        bot.send_message(chat_id, "Перемещение задач отменено.")
+        # Обновим исходный список (предполагаем, что именно он сейчас открыт у пользователя)
+        send_section(chat_id, sec, parent_index=par)
+    elif typ == "del":
+        sec = action["section"]
+        par = action["parent"]
+        items = action["items"]
+        positions = action["positions"]
+        # Вставляем удаленные задачи обратно на их исходные позиции
+        target_list = user_data.get(sec, [])
+        if par is None:
+            for pos, it in zip(positions, items):
+                if pos <= len(target_list):
+                    target_list.insert(pos, it)
+                else:
+                    target_list.append(it)
         else:
-            send_message(chat_id, "Не нашла такой проект.")
-        return
+            parent_item = target_list[par]
+            child_list = parent_item["children"]
+            for pos, it in zip(positions, items):
+                if pos <= len(child_list):
+                    child_list.insert(pos, it)
+                else:
+                    child_list.append(it)
+        bot.send_message(chat_id, "Удаление задач отменено.")
+        send_section(chat_id, sec, parent_index=par)
+    save_user_data(chat_id)
 
-    # === Команды для привычек ===
-    if lower.startswith("hadd"):
-        rest = text[4:].strip()
-        if not rest:
-            send_message(chat_id, "Формат: hadd <название>|<график>")
-            return
-        if "|" in rest:
-            name_part, sched = rest.split("|", 1)
-            name = name_part.strip()
-            schedule = sched.strip()
-        else:
-            name = rest
-            schedule = ""
-        habit = add_habit(name, schedule)
-        send_message(chat_id, f"Добавила привычку #{habit['id']}: {habit['name']}")
-        return
-    if lower.startswith("hedit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: hedit <ID> <название>|<график>")
-            return
-        try:
-            hid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер привычки.")
-            return
-        rest = parts[2]
-        if "|" in rest:
-            name_part, sched = rest.split("|", 1)
-            name = name_part.strip()
-            schedule = sched.strip()
-        else:
-            name = rest.strip()
-            schedule = ""
-        ok, updated = update_habit(hid, name, schedule)
-        if not ok:
-            send_message(chat_id, "Не нашла такую привычку.")
-            return
-        send_message(chat_id, f"Обновила привычку #{hid}.")
-        send_message(chat_id, render_habit_card(updated))
-        return
-    if lower.startswith("hdel "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: hdel <ID>")
-            return
-        try:
-            hid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер привычки.")
-            return
-        if delete_habit(hid):
-            send_message(chat_id, f"Удалена привычка #{hid}.")
-        else:
-            send_message(chat_id, "Не нашла такую привычку.")
-        return
-    if lower.startswith("hopen "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: hopen <ID>")
-            return
-        try:
-            hid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер привычки.")
-            return
-        habit = get_habit_by_id(hid)
-        if habit:
-            send_message(chat_id, render_habit_card(habit))
-        else:
-            send_message(chat_id, "Не нашла такую привычку.")
-        return
+# Отключаем какую-либо клавиатуру меню по умолчанию (не используем custom keyboard)
+# bot.set_my_commands([])  # Можно очистить список команд меню, если необходимо
 
-    # === Команды для SOS ===
-    if lower.startswith("sadd"):
-        rest = text[4:].strip()
-        if not rest:
-            send_message(chat_id, "Формат: sadd <название>|<шаг1;шаг2;...>")
-            return
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
-        else:
-            name = rest
-            steps = []
-        sos = add_sos(name, steps)
-        send_message(chat_id, f"Добавила SOS #{sos['id']}: {sos['name']}")
-        return
-    if lower.startswith("sedit "):
-        parts = text.split(maxsplit=2)
-        if len(parts) < 3:
-            send_message(chat_id, "Формат: sedit <ID> <название>|<шаги>")
-            return
-        try:
-            sid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер SOS.")
-            return
-        rest = parts[2]
-        if "|" in rest:
-            name_part, steps_str = rest.split("|", 1)
-            name = name_part.strip()
-            steps = [s.strip() for s in steps_str.split(";") if s.strip()]
-        else:
-            name = rest.strip()
-            steps = []
-        ok, updated = update_sos(sid, name, steps)
-        if not ok:
-            send_message(chat_id, "Не нашла такой SOS.")
-            return
-        send_message(chat_id, f"Обновила SOS #{sid}.")
-        send_message(chat_id, render_sos_card(updated))
-        return
-    if lower.startswith("sdel "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: sdel <ID>")
-            return
-        try:
-            sid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер SOS.")
-            return
-        if delete_sos(sid):
-            send_message(chat_id, f"Удалён SOS #{sid}.")
-        else:
-            send_message(chat_id, "Не нашла такой SOS.")
-        return
-    if lower.startswith("sopen "):
-        parts = text.split(maxsplit=1)
-        if len(parts) < 2:
-            send_message(chat_id, "Формат: sopen <ID>")
-            return
-        try:
-            sid = int(parts[1])
-        except ValueError:
-            send_message(chat_id, "Не поняла номер SOS.")
-            return
-        sos_item = get_sos_by_id(sid)
-        if sos_item:
-            send_message(chat_id, render_sos_card(sos_item))
-        else:
-            send_message(chat_id, "Не нашла такой SOS.")
-        return
-
-    # Если команда не распознана, пытаемся добавить текст как задачу.
-    handle_add_inbox_text(chat_id, text)
-
-
-@app.route("/webhook", methods=["POST"])
-def webhook() -> str:
-    """Receive updates from Telegram and dispatch them."""
-    data = request.get_json(force=True, silent=True)
-    if not data:
-        return ""
-    if "message" in data and isinstance(data["message"], dict):
-        handle_text_message(data["message"])
-    return ""
-
-
-@app.route("/health", methods=["GET"])
-def health() -> str:
-    """Simple health endpoint for uptime checks."""
-    return "ok"
-
-
-if __name__ == "__main__":
-    # Bind to PORT if defined; default to 5000.
-    port = int(os.environ.get("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+print("Bot is polling...")
+bot.polling(none_stop=True)
