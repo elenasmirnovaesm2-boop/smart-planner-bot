@@ -2,7 +2,7 @@ import telebot
 from storage import tasks_by_user, save_data, load_data
 # import keyboards  # (клавиатура меню удалена, более не используется)
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "TELEGRAM_BOT_TOKEN"
 bot = telebot.TeleBot(TOKEN)
 
 # Глобальные структуры для контекста и истории действий (для undo)
