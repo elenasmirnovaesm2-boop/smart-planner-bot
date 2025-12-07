@@ -1,9 +1,13 @@
+import os
 import telebot
+from flask import Flask, request
 from storage import tasks_by_user, save_data, load_data
 # import keyboards  # (клавиатура меню удалена, более не используется)
 
-TOKEN = "TELEGRAM_BOT_TOKEN"
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
+
+app = Flask(__name__)
 
 # Глобальные структуры для контекста и истории действий (для undo)
 context_map = {}  # {(chat_id, message_id): (section, parent_index)}
@@ -539,5 +543,33 @@ def undo_handler(message):
 # Отключаем какую-либо клавиатуру меню по умолчанию (не используем custom keyboard)
 # bot.set_my_commands([])  # Можно очистить список команд меню, если необходимо
 
-print("Bot is polling...")
-bot.polling(none_stop=True)
+
+# ====== WEBHOOK ======
+
+@app.route("/" + TOKEN, methods=["POST"])
+def webhook():
+    """Точка входа для апдейтов от Telegram."""
+    json_str = request.get_data().decode("utf-8")
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return "OK", 200
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return "ok", 200
+
+
+if __name__ == "__main__":
+    # На всякий случай снимаем старый вебхук
+    bot.remove_webhook()
+
+    # ВПИШИ сюда свой URL сервиса Render
+    # Пример: https://smart-planner-bot.onrender.com
+    BASE_URL = "https://ТВОЙ-СЕРВИС.onrender.com"
+
+    webhook_url = BASE_URL.rstrip("/") + "/" + TOKEN
+    bot.set_webhook(url=webhook_url)
+
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
