@@ -129,7 +129,37 @@ def start_handler(message):
     "Для справки по командам введите /help",
     reply_markup=main_keyboard()
 )
+@bot.message_handler(func=lambda m: m.text in ("📝 Инбокс",))
+def open_inbox_button(message):
+    send_section(message.chat.id, "inbox", parent_index=None)
 
+@bot.message_handler(func=lambda m: m.text in ("📅 Сегодня",))
+def open_today_button(message):
+    send_section(message.chat.id, "today", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("📋 Рутины",))
+def open_routines_button(message):
+    send_section(message.chat.id, "routines", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("📅 Шаблоны",))
+def open_templates_button(message):
+    send_section(message.chat.id, "templates", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("📦 Проекты",))
+def open_projects_button(message):
+    send_section(message.chat.id, "projects", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("🔥 Привычки",))
+def open_habits_button(message):
+    send_section(message.chat.id, "habits", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("🆘 SOS",))
+def open_sos_button(message):
+    send_section(message.chat.id, "sos", parent_index=None)
+
+@bot.message_handler(func=lambda m: m.text in ("ℹ️ Справка",))
+def help_button(message):
+    help_handler(message)
     # Сохраняем данные (например, создаем файл пользователя)
     save_user_data(chat_id)
 
