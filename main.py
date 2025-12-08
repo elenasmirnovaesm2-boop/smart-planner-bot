@@ -122,13 +122,17 @@ def start_handler(message):
     chat_id = message.chat.id
     # Инициализируем данные пользователя
     get_user_data(chat_id)
-    # Приветственное сообщение
+    # Приветственное сообщение + главное меню
     bot.send_message(
-    chat_id,
-    "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
-    "Для справки по командам введите /help",
-    reply_markup=main_keyboard()
-)
+        chat_id,
+        "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
+        "Для справки по командам введите /help",
+        reply_markup=main_keyboard()
+    )
+    # Сохраняем данные пользователя
+    save_user_data(chat_id)
+
+
 @bot.message_handler(func=lambda m: m.text in ("📝 Инбокс",))
 def open_inbox_button(message):
     send_section(message.chat.id, "inbox", parent_index=None)
@@ -160,8 +164,6 @@ def open_sos_button(message):
 @bot.message_handler(func=lambda m: m.text in ("ℹ️ Справка",))
 def help_button(message):
     help_handler(message)
-    # Сохраняем данные (например, создаем файл пользователя)
-    save_user_data(chat_id)
 
 @bot.message_handler(commands=['help'])
 def help_handler(message):
