@@ -18,6 +18,17 @@ bot = telebot.TeleBot(TOKEN)
 
 app = Flask(__name__)
 
+🔒 Разрешённые пользователи
+ALLOWED_USERS = {123456789}  # <-- сюда вместо 123456789 вставь свой ID
+
+
+def is_allowed(message):
+    """
+    Возвращает True только для разрешённых пользователей.
+    """
+    user_id = message.from_user.id if message.from_user else None
+    return user_id in ALLOWED_USERS
+
 # Глобальные структуры для контекста и истории действий (для undo)
 context_map = {}  # {(chat_id, message_id): (section, parent_index)}
 undo_stack = {}   # {chat_id: [actions...]}
@@ -119,54 +130,72 @@ def push_undo(chat_id, action):
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
+    if not is_allowed(message):
+        return  # можно ничего не отвечать или написать "Доступ запрещён"
+
     chat_id = message.chat.id
-    # Инициализируем данные пользователя
     get_user_data(chat_id)
-    # Приветственное сообщение + главное меню
     bot.send_message(
         chat_id,
         "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
         "Для справки по командам введите /help",
         reply_markup=main_keyboard()
     )
-    # Сохраняем данные пользователя
     save_user_data(chat_id)
 
 
 @bot.message_handler(func=lambda m: m.text in ("📝 Инбокс",))
 def open_inbox_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "inbox", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("📅 Сегодня",))
 def open_today_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "today", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("📋 Рутины",))
 def open_routines_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "routines", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("📅 Шаблоны",))
 def open_templates_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "templates", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("📦 Проекты",))
 def open_projects_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "projects", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("🔥 Привычки",))
 def open_habits_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "habits", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("🆘 SOS",))
 def open_sos_button(message):
+    if not is_allowed(message):
+        return
     send_section(message.chat.id, "sos", parent_index=None)
 
 @bot.message_handler(func=lambda m: m.text in ("ℹ️ Справка",))
 def help_button(message):
+    if not is_allowed(message):
+        return
     help_handler(message)
 
 @bot.message_handler(commands=['help'])
 def help_handler(message):
+    if not is_allowed(message):
+        return
     chat_id = message.chat.id
     help_text = (
         "**Доступные команды:**\n"
