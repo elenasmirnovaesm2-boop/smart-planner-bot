@@ -1,9 +1,9 @@
 import os
 import telebot
+from telebot import types        # ← ДОБАВЬ ЭТУ СТРОКУ
 from flask import Flask, request
 from storage import tasks_by_user, save_data, load_data
 # import keyboards  # (клавиатура меню удалена, более не используется)
-
 def main_keyboard():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.row("📝 Инбокс", "📅 Сегодня")
