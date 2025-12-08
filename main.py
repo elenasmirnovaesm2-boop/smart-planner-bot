@@ -4,6 +4,15 @@ from flask import Flask, request
 from storage import tasks_by_user, save_data, load_data
 # import keyboards  # (клавиатура меню удалена, более не используется)
 
+def main_keyboard():
+    kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    kb.row("📝 Инбокс", "📅 Сегодня")
+    kb.row("📋 Рутины", "📅 Шаблоны")
+    kb.row("📦 Проекты", "🔥 Привычки")
+    kb.row("🆘 SOS", "ℹ️ Справка")
+    return kb
+
+
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
