@@ -123,9 +123,13 @@ def start_handler(message):
     # Инициализируем данные пользователя
     get_user_data(chat_id)
     # Приветственное сообщение
-    bot.send_message(chat_id, 
-        "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
-        "Для справки по командам введите /help")
+    bot.send_message(
+    chat_id,
+    "Привет! Я Smart Planner Bot – помогу спланировать дела.\n"
+    "Для справки по командам введите /help",
+    reply_markup=main_keyboard()
+)
+
     # Сохраняем данные (например, создаем файл пользователя)
     save_user_data(chat_id)
 
