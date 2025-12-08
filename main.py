@@ -546,7 +546,7 @@ def undo_handler(message):
 
 # ====== WEBHOOK ======
 
-@app.route("/" + TOKEN, methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def webhook():
     """Точка входа для апдейтов от Telegram."""
     json_str = request.get_data().decode("utf-8")
@@ -561,14 +561,12 @@ def index():
 
 
 if __name__ == "__main__":
-    # На всякий случай снимаем старый вебхук
+    # Снимаем старый вебхук (на всякий случай)
     bot.remove_webhook()
 
-    # ВПИШИ сюда свой URL сервиса Render
-    # Пример: https://smart-planner-bot.onrender.com
-    BASE_URL = "https://ТВОЙ-СЕРВИС.onrender.com"
+    BASE_URL = "https://smart-planner-bot.onrender.com"
+    webhook_url = BASE_URL.rstrip("/") + "/webhook"
 
-    webhook_url = BASE_URL.rstrip("/") + "/" + TOKEN
     bot.set_webhook(url=webhook_url)
 
     port = int(os.environ.get("PORT", 5000))
