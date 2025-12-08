@@ -16,7 +16,7 @@ dbx = dropbox.Dropbox(DROPBOX_TOKEN)
 
 # Если файлы лежат в корне Dropbox – оставь пустую строку.
 # Если они в папке (например, /planner), впиши FOLDER = "/planner"
-FOLDER = ""
+FOLDER = "/smart-planner"
 
 
 def _path(filename: str) -> str:
