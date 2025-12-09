@@ -1,5 +1,6 @@
 import os
 import telebot
+from auth_config import is_allowed
 from telebot import types        # ← ДОБАВЬ ЭТУ СТРОКУ
 from flask import Flask, request
 from storage import tasks_by_user, save_data, load_data
@@ -625,6 +626,18 @@ def webhook():
     """Точка входа для апдейтов от Telegram."""
     json_str = request.get_data().decode("utf-8")
     update = telebot.types.Update.de_json(json_str)
+
+    # Пытаемся достать user_id из апдейта
+    user_id = None
+    if update.message and update.message.from_user:
+        user_id = update.message.from_user.id
+    elif update.callback_query and update.callback_query.from_user:
+        user_id = update.callback_query.from_user.id
+
+    # Если пользователь не в белом списке — просто игнорируем апдейт
+    if user_id is not None and not is_allowed(user_id):
+        return "IGNORED", 200
+
     bot.process_new_updates([update])
     return "OK", 200
 
