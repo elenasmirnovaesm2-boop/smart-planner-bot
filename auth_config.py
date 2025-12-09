@@ -3,7 +3,9 @@
 # сюда ВПИШИ свой Telegram user_id вместо 123456789
 ALLOWED_USERS = {7604757170}
 
+def is_allowed(message):
+    # Если прилетело не сообщение (например, системный апдейт) — отклоняем
+    if not hasattr(message, "from_user") or message.from_user is None:
+        return False
 
-def is_allowed(user_id: int) -> bool:
-    """Проверяем, есть ли user_id в белом списке."""
-    return user_id in ALLOWED_USERS
+    return message.from_user.id in ALLOWED_USERS
